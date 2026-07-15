@@ -121,6 +121,7 @@ typedef enum {
   TypeExecutable = 0,
   TypeStaticLib,
   TypeSharedLib,
+  TypeCustom,
 } Type;
 
 typedef struct TargetBuildInfo TargetBuildInfo;
@@ -128,8 +129,10 @@ typedef struct TargetBuildInfo TargetBuildInfo;
 typedef struct {
   Str              file;
   Type             type;
+  Str              cmd;
   Str              src_pattern;
   Str              deps_pattern;
+  Str              ghost_deps_pattern;
   Str              compiler;
   Str              archiver;
   Str              cflags;
@@ -140,7 +143,13 @@ typedef struct {
 } Target;
 
 typedef Da(Target) Targets;
-typedef Da(Target *) TargetRefs;
+
+typedef struct {
+  Target *target;
+  bool    is_ghost;
+} Dep;
+
+typedef Da(Dep) Deps;
 
 typedef struct {
   Str     content;
@@ -165,8 +174,10 @@ typedef enum {
 struct TargetBuildInfo {
   Str         file;
   Type        type;
+  Str         cmd;
   Str         srcs_expanded;
   Str         deps_expanded;
+  Str         ghost_deps_expanded;
   Strs        srcs;
   Strss       header_deps;
   Str         compiler;
@@ -175,7 +186,7 @@ struct TargetBuildInfo {
   Str         ldflags;
   Str         arflags;
   Str         incpath;
-  TargetRefs  dep_targets;
+  Deps        deps;
   bool        rebuild;
   BuildResult build_result;
 };
@@ -242,6 +253,7 @@ static void target_build_info_destroy(TargetBuildInfo *info) {
   free(info->file.ptr);
   free(info->srcs_expanded.ptr);
   free(info->deps_expanded.ptr);
+  free(info->ghost_deps_expanded.ptr);
   if (info->srcs.items)
     free(info->srcs.items);
   for (u32 i = 0; i < info->header_deps.len; ++i) {
@@ -257,8 +269,8 @@ static void target_build_info_destroy(TargetBuildInfo *info) {
   free(info->cflags.ptr);
   free(info->ldflags.ptr);
   free(info->incpath.ptr);
-  if (info->dep_targets.items)
-    free(info->dep_targets.items);
+  if (info->deps.items)
+    free(info->deps.items);
   free(info);
 }
 
@@ -530,6 +542,8 @@ static bool parse_target(Parser *parser) {
         target.type = TypeStaticLib;
       } else if (str_eq(value, STR_LIT("shared_lib"))) {
         target.type = TypeSharedLib;
+      } else if (str_eq(value, STR_LIT("custom"))) {
+        target.type = TypeCustom;
       } else {
         parser->row = value_row;
         parser->col = value_col;
@@ -541,10 +555,14 @@ static bool parse_target(Parser *parser) {
         fprintf(stderr, "    shared_lib\n");
         return false;
       }
+    } else if (str_eq(name, STR_LIT("cmd"))) {
+      target.cmd = value;
     } else if (str_eq(name, STR_LIT("src"))) {
       target.src_pattern = value;
     } else if (str_eq(name, STR_LIT("deps"))) {
       target.deps_pattern = value;
+    } else if (str_eq(name, STR_LIT("ghost_deps"))) {
+      target.ghost_deps_pattern = value;
     } else if (str_eq(name, STR_LIT("cc"))) {
       target.compiler = value;
     } else if (str_eq(name, STR_LIT("ar"))) {
@@ -565,11 +583,11 @@ static bool parse_target(Parser *parser) {
       return false;
     }
 #ifndef _WIN32
-    _Static_assert (sizeof(Target) == 160, "Target structure configuration changed");
+    _Static_assert (sizeof(Target) == 192, "Target structure configuration changed");
 #endif
   }
 
-  if (target.src_pattern.len == 0) {
+  if (target.type != TypeCustom && target.src_pattern.len == 0) {
     fprintf(stderr, "[ERROR] Target %.*s does not have `src` field\n",
             target.file.len, target.file.ptr);
     return false;
@@ -577,6 +595,12 @@ static bool parse_target(Parser *parser) {
 
   if (target.type == TypeStaticLib && target.incpath.len == 0) {
     fprintf(stderr, "[ERROR] Target of type static_lib %.*s does not have `incpath` field\n",
+            target.file.len, target.file.ptr);
+    return false;
+  }
+
+  if (target.type == TypeCustom && target.cmd.len == 0) {
+    fprintf(stderr, "[ERROR] Target of type custom %.*s does not have `cmd` field\n",
             target.file.len, target.file.ptr);
     return false;
   }
@@ -662,6 +686,7 @@ static char *get_target_type_str(Type type) {
   case TypeExecutable: return "executable";
   case TypeStaticLib:  return "static_lib";
   case TypeSharedLib:  return "shared_lib";
+  case TypeCustom:     return "custom";
   }
 
   fprintf(stderr, "UNREACHABLE\n");
@@ -682,8 +707,10 @@ static void dump_build_config(BuildConfig *build_config) {
     Target *target = build_config->targets.items + i;
     printf("[%.*s]\n", target->file.len, target->file.ptr);
     printf("type = %s\n", get_target_type_str(target->type));
+    PRINT_TARGET_FIELD(target, cmd, "cmd");
     PRINT_TARGET_FIELD(target, src_pattern, "src");
     PRINT_TARGET_FIELD(target, deps_pattern, "deps");
+    PRINT_TARGET_FIELD(target, ghost_deps_pattern, "ghost_deps");
     PRINT_TARGET_FIELD(target, compiler, "cc");
     PRINT_TARGET_FIELD(target, archiver, "ar");
     PRINT_TARGET_FIELD(target, cflags, "cflags");
@@ -691,7 +718,7 @@ static void dump_build_config(BuildConfig *build_config) {
     PRINT_TARGET_FIELD(target, arflags, "arflags");
     PRINT_TARGET_FIELD(target, incpath, "incpath");
 #ifndef _WIN32
-    _Static_assert (sizeof(Target) == 160, "Target structure configuration changed");
+    _Static_assert (sizeof(Target) == 192, "Target structure configuration changed");
 #endif
   }
 }
@@ -948,6 +975,12 @@ static Str get_target_full_file(Str file, Type type) {
     memcpy(full_file.ptr + 3, file.ptr, file.len);
     memcpy(full_file.ptr + 3 + file.len, ext.ptr, ext.len);
     return full_file;
+  } else if (type == TypeCustom) {
+    Str full_file;
+    full_file.len = file.len;
+    full_file.ptr = malloc(full_file.len);
+    memcpy(full_file.ptr, file.ptr, file.len);
+    return full_file;
   }
 
   fprintf(stderr, "UNREACHABLE\n");
@@ -1096,8 +1129,10 @@ static TargetBuildInfo *get_target_build_info(BuildConfig *build_config, Target 
   info->file = get_target_full_file(file_expanded, target->type);
   free(file_expanded.ptr);
   info->type = target->type;
+  info->cmd = expand_value(build_config, target->cmd);
   info->srcs_expanded = expand_value(build_config, target->src_pattern);
   info->deps_expanded = expand_value(build_config, target->deps_pattern);
+  info->ghost_deps_expanded = expand_value(build_config, target->ghost_deps_pattern);
   info->srcs = match_glob(info->srcs_expanded);
   info->compiler = expand_value(build_config, target->compiler);
   info->archiver = expand_value(build_config, target->archiver);
@@ -1110,7 +1145,7 @@ static TargetBuildInfo *get_target_build_info(BuildConfig *build_config, Target 
   info->build_result = BuildResultFail;
 
   for (u32 i = 0; i < info->srcs.len; ++i) {
-    Target *dep_target = NULL;
+    Dep dep = { NULL, false };
 
     Strs header_deps = parse_header_deps(info->srcs.items[i], info->cflags);
     DA_APPEND(info->header_deps, header_deps);
@@ -1124,39 +1159,58 @@ static TargetBuildInfo *get_target_build_info(BuildConfig *build_config, Target 
 
     for (u32 j = 0; j < build_config->targets.len; ++j) {
       if (str_eq(build_config->targets.items[j].file, info->srcs.items[i])) {
-        dep_target = build_config->targets.items + j;
+        dep.target = build_config->targets.items + j;
         break;
       }
     }
 
-    if (dep_target)
-      DA_APPEND(info->dep_targets, dep_target);
+    if (dep.target)
+      DA_APPEND(info->deps, dep);
   }
 
   Strs deps = split(info->deps_expanded, ' ');
 
   for (u32 i = 0; i < deps.len; ++i) {
-    Target *dep_target = NULL;
+    Dep dep = { NULL, false };
 
     for (u32 j = 0; j < build_config->targets.len; ++j) {
       if (str_eq(build_config->targets.items[j].file, deps.items[i])) {
-        dep_target = build_config->targets.items + j;
+        dep.target = build_config->targets.items + j;
         break;
       }
     }
 
-    if (dep_target)
-      DA_APPEND(info->dep_targets, dep_target);
+    if (dep.target)
+      DA_APPEND(info->deps, dep);
   }
 
   if (deps.items)
     free(deps.items);
 
+  Strs ghost_deps = split(info->ghost_deps_expanded, ' ');
+
+  for (u32 i = 0; i < ghost_deps.len; ++i) {
+    Dep dep = { NULL, true };
+
+    for (u32 j = 0; j < build_config->targets.len; ++j) {
+      if (str_eq(build_config->targets.items[j].file, ghost_deps.items[i])) {
+        dep.target = build_config->targets.items + j;
+        break;
+      }
+    }
+
+    if (dep.target)
+      DA_APPEND(info->deps, dep);
+  }
+
+  if (ghost_deps.items)
+    free(ghost_deps.items);
+
   return info;
 }
 
 static Str src_to_obj_path(TargetBuildInfo *target_info, Str src) {
-  bool add_slash = target_info->incpath.ptr[target_info->incpath.len - 1] != PATH_SEP;
+  bool add_slash = target_info->incpath.len > 0 && target_info->incpath.ptr[target_info->incpath.len - 1] != PATH_SEP;
   Str extension = get_objective_extension();
   Str result;
   result.len = target_info->incpath.len + add_slash + src.len + extension.len;
@@ -1170,45 +1224,44 @@ static Str src_to_obj_path(TargetBuildInfo *target_info, Str src) {
 }
 
 static void make_directory(Str path, bool is_file_path) {
-  StringBuilder sb = {0};
-  u32 anchor = 0, i = 0;
+  u32 i = 0;
 
   while (i < path.len) {
     if (path.ptr[i] == PATH_SEP) {
-      DA_APPEND_MANY(sb, path.ptr + anchor, i - anchor);
-      sb_append_char(&sb, '\0');
-      if (!dir_exists_cstr(sb.items)) {
+      char prev = path.ptr[i];
+      path.ptr[i] = '\0';
+      if (!dir_exists_cstr(path.ptr)) {
         if (config.verbose)
-          printf("[INFO] Creating directory %s\n", sb.items);
+          printf("[INFO] Creating directory %s\n", path.ptr);
 #ifdef _WIN32
-        CreateDirectoryA(sb.items, NULL);
+        CreateDirectoryA(path.ptr, NULL);
 #else
-        mkdir(sb.items, 0777);
+        mkdir(path.ptr, 0777);
 #endif
       }
-      sb.items[sb.len - 1] = PATH_SEP;
-      anchor = ++i;
-    } else {
-      ++i;
+      path.ptr[i] = prev;
     }
+
+    ++i;
   }
 
-  if (!is_file_path && anchor < path.len) {
-    DA_APPEND_MANY(sb, path.ptr + anchor, path.len - anchor);
-    sb_append_char(&sb, '\0');
-    if (!dir_exists_cstr(sb.items)) {
+  if (!is_file_path && path.ptr[path.len - 1] != PATH_SEP) {
+    Str temp_path;
+    temp_path.len = path.len;
+    temp_path.ptr = malloc(temp_path.len + 1);
+    memcpy(temp_path.ptr, path.ptr, temp_path.len);
+    temp_path.ptr[temp_path.len] = '\0';
+    if (!dir_exists_cstr(temp_path.ptr)) {
       if (config.verbose)
-        printf("[INFO] Creating directory %s\n", sb.items);
+        printf("[INFO] Creating directory %s\n", temp_path.ptr);
 #ifdef _WIN32
-      CreateDirectoryA(sb.items, NULL);
+      CreateDirectoryA(temp_path.ptr, NULL);
 #else
-      mkdir(sb.items, 0777);
+      mkdir(temp_path.ptr, 0777);
 #endif
     }
+    free(temp_path.ptr);
   }
-
-  if (sb.items)
-    free(sb.items);
 }
 
 static bool needs_rebuild(Str src, Str dest) {
@@ -1274,9 +1327,9 @@ static bool needs_rebuild_many_srcs(Strs *srcs, Str dest) {
   return false;
 }
 
-static bool needs_rebuild_target_refs(TargetRefs *srcs, Str dest) {
-  for (u32 i = 0; i < srcs->len; ++i)
-    if (needs_rebuild(srcs->items[i]->info->file, dest))
+static bool needs_rebuild_deps(Deps *deps, Str dest) {
+  for (u32 i = 0; i < deps->len; ++i)
+    if (needs_rebuild(deps->items[i].target->info->file, dest))
       return true;
 
   return false;
@@ -1314,7 +1367,7 @@ static char *get_target_obj_build_cmd(TargetBuildInfo *info, u32 index) {
 }
 
 static char *get_inc_executable_target_build_cmd(TargetBuildInfo *info) {
-  if (!info->rebuild && !needs_rebuild_target_refs(&info->dep_targets, info->file))
+  if (!info->rebuild && !needs_rebuild_deps(&info->deps, info->file))
     return NULL;
 
   StringBuilder sb = {0};
@@ -1323,6 +1376,7 @@ static char *get_inc_executable_target_build_cmd(TargetBuildInfo *info) {
   sb_append_str(&sb, choose_compiler_executable_output_prefix());
   if (get_quote_output_file())
     sb_append_char(&sb, '"');
+  make_directory(info->file, true);
   sb_append_str(&sb, info->file);
   if (get_quote_output_file())
     sb_append_char(&sb, '"');
@@ -1332,9 +1386,11 @@ static char *get_inc_executable_target_build_cmd(TargetBuildInfo *info) {
     sb_append_str(&sb, obj_path);
     free(obj_path.ptr);
   }
-  for (u32 i = 0; i < info->dep_targets.len; ++i) {
-    sb_append_char(&sb, ' ');
-    sb_append_str(&sb, info->dep_targets.items[i]->info->file);
+  for (u32 i = 0; i < info->deps.len; ++i) {
+    if (!info->deps.items[i].is_ghost) {
+      sb_append_char(&sb, ' ');
+      sb_append_str(&sb, info->deps.items[i].target->info->file);
+    }
   }
   if (info->ldflags.len > 0) {
     sb_append_char(&sb, ' ');
@@ -1349,13 +1405,18 @@ static char *get_full_executable_target_build_cmd(TargetBuildInfo *info) {
   if (!info->rebuild) {
     if (!needs_rebuild_many_srcs(&info->srcs, info->file))
       return NULL;
-    if (!needs_rebuild_target_refs(&info->dep_targets, info->file))
+    if (!needs_rebuild_deps(&info->deps, info->file))
       return NULL;
   }
 
   StringBuilder sb = {0};
   sb_append_str(&sb, info->compiler);
   sb_append_char(&sb, ' ');
+  u32 saved_len = sb.len;
+  sb_append_str(&sb, choose_compiler_executable_output_prefix());
+  sb_append_str(&sb, info->file);
+  make_directory((Str) { sb.items + saved_len, sb.len - saved_len }, true);
+  sb.len = saved_len;
   sb_append_str(&sb, choose_compiler_executable_output_prefix());
   if (get_quote_output_file())
     sb_append_char(&sb, '"');
@@ -1370,9 +1431,11 @@ static char *get_full_executable_target_build_cmd(TargetBuildInfo *info) {
     sb_append_char(&sb, ' ');
     sb_append_strs(&sb, &info->srcs);
   }
-  for (u32 i = 0; i < info->dep_targets.len; ++i) {
-    sb_append_char(&sb, ' ');
-    sb_append_str(&sb, info->dep_targets.items[i]->info->file);
+  for (u32 i = 0; i < info->deps.len; ++i) {
+    if (!info->deps.items[i].is_ghost) {
+      sb_append_char(&sb, ' ');
+      sb_append_str(&sb, info->deps.items[i].target->info->file);
+    }
   }
   if (info->ldflags.len > 0) {
     sb_append_char(&sb, ' ');
@@ -1404,8 +1467,10 @@ static char *get_static_lib_target_build_cmd(TargetBuildInfo *info) {
     sb_append_str(&sb, info->arflags);
   }
   sb_append_char(&sb, ' ');
+  u32 saved_len = sb.len;
   sb_append_str(&sb, choose_archiver_output_prefix());
   sb_append_str(&sb, info->file);
+  make_directory((Str) { sb.items + saved_len, sb.len - saved_len }, true);
   sb_append_strs(&sb, &obj_paths);
   sb_append_char(&sb, '\0');
 
@@ -1418,7 +1483,7 @@ static char *get_static_lib_target_build_cmd(TargetBuildInfo *info) {
 }
 
 static char *get_inc_shared_lib_target_build_cmd(TargetBuildInfo *info) {
-  if (!info->rebuild && !needs_rebuild_target_refs(&info->dep_targets, info->file))
+  if (!info->rebuild && !needs_rebuild_deps(&info->deps, info->file))
     return NULL;
 
   Strs obj_paths = {0};
@@ -1436,12 +1501,17 @@ static char *get_inc_shared_lib_target_build_cmd(TargetBuildInfo *info) {
 
   StringBuilder sb = {0};
   sb_append_str(&sb, info->compiler);
+  sb_append_char(&sb, ' ');
+  u32 saved_len = sb.len;
   sb_append_str(&sb, choose_compiler_shared_lib_output_prefix());
   sb_append_str(&sb, info->file);
+  make_directory((Str) { sb.items + saved_len, sb.len - saved_len }, true);
   sb_append_strs(&sb, &obj_paths);
-  for (u32 i = 0; i < info->dep_targets.len; ++i) {
-    sb_append_char(&sb, ' ');
-    sb_append_str(&sb, info->dep_targets.items[i]->info->file);
+  for (u32 i = 0; i < info->deps.len; ++i) {
+    if (!info->deps.items[i].is_ghost) {
+      sb_append_char(&sb, ' ');
+      sb_append_str(&sb, info->deps.items[i].target->info->file);
+    }
   }
   if (info->ldflags.len > 0) {
     sb_append_char(&sb, ' ');
@@ -1461,15 +1531,17 @@ static char *get_full_shared_lib_target_build_cmd(TargetBuildInfo *info) {
   if (!info->rebuild) {
     if (!needs_rebuild_many_srcs(&info->srcs, info->file))
       return NULL;
-    if (!needs_rebuild_target_refs(&info->dep_targets, info->file))
+    if (!needs_rebuild_deps(&info->deps, info->file))
       return NULL;
   }
 
   StringBuilder sb = {0};
   sb_append_str(&sb, info->compiler);
   sb_append_char(&sb, ' ');
+  u32 saved_len = sb.len;
   sb_append_str(&sb, choose_compiler_shared_lib_output_prefix());
   sb_append_str(&sb, info->file);
+  make_directory((Str) { sb.items + saved_len, sb.len - saved_len }, true);
   if (info->cflags.len > 0) {
     sb_append_char(&sb, ' ');
     sb_append_str(&sb, info->cflags);
@@ -1478,14 +1550,31 @@ static char *get_full_shared_lib_target_build_cmd(TargetBuildInfo *info) {
     sb_append_char(&sb, ' ');
     sb_append_strs(&sb, &info->srcs);
   }
-  for (u32 i = 0; i < info->dep_targets.len; ++i) {
-    sb_append_char(&sb, ' ');
-    sb_append_str(&sb, info->dep_targets.items[i]->info->file);
+  for (u32 i = 0; i < info->deps.len; ++i) {
+    if (!info->deps.items[i].is_ghost) {
+      sb_append_char(&sb, ' ');
+      sb_append_str(&sb, info->deps.items[i].target->info->file);
+    }
   }
   if (info->ldflags.len > 0) {
     sb_append_char(&sb, ' ');
     sb_append_str(&sb, info->ldflags);
   }
+  sb_append_char(&sb, '\0');
+
+  return sb.items;
+}
+
+static char *get_custom_target_build_cmd(TargetBuildInfo *info) {
+  if (!info->rebuild) {
+    if (!needs_rebuild_many_srcs(&info->srcs, info->file))
+      return NULL;
+    if (!needs_rebuild_deps(&info->deps, info->file))
+      return NULL;
+  }
+
+  StringBuilder sb = {0};
+  sb_append_str(&sb, info->cmd);
   sb_append_char(&sb, '\0');
 
   return sb.items;
@@ -1526,20 +1615,21 @@ static BuildResult build(BuildConfig *build_config, Target *target) {
   if (info->build_result != BuildResultFail)
     return info->build_result;
 
-  for (u32 i = 0; i < info->dep_targets.len; ++i) {
-    BuildResult result = build(build_config, info->dep_targets.items[i]);
+  for (u32 i = 0; i < info->deps.len; ++i) {
+    BuildResult result = build(build_config, info->deps.items[i].target);
     if (result == BuildResultFail)
       return BuildResultFail;
     if (result == BuildResultOk)
       info->rebuild = true;
   }
 
-  CStrs src_build_cmds = {0};
   if (((info->type == TypeExecutable || info->type == TypeSharedLib) &&
        info->incpath.len > 0) ||
       info->type == TypeStaticLib) {
     make_directory(info->incpath, false);
     create_gitignore_file(info->incpath);
+
+    CStrs src_build_cmds = {0};
     for (u32 i = 0; i < info->srcs.len; ++i) {
       char *cmd = get_target_obj_build_cmd(info, i);
       if (cmd)
@@ -1551,21 +1641,28 @@ static BuildResult build(BuildConfig *build_config, Target *target) {
       info->rebuild = true;
     }
 
+    bool failed = false;
     for (u32 i = 0; i < src_build_cmds.len; ++i) {
       if (config.verbose)
         printf("[INFO] Running %s\n", src_build_cmds.items[i]);
       int result = system(src_build_cmds.items[i]);
       free(src_build_cmds.items[i]);
-      if (result != 0) {
-        for (u32 j = i + 1; j < src_build_cmds.len; ++j)
-          free(src_build_cmds.items[j]);
-        free(src_build_cmds.items);
-        return BuildResultFail;
-      }
+      if (result != 0)
+        failed = true;
     }
 
     if (src_build_cmds.items)
       free(src_build_cmds.items);
+
+    if (failed)
+      return BuildResultFail;
+  } else if (info->type == TypeCustom && info->srcs.len > 0) {
+    for (u32 i = 0; i < info->srcs.len; ++i) {
+      if (needs_rebuild(info->srcs.items[i], info->file)) {
+        info->rebuild = true;
+        break;
+      }
+    }
   }
 
   char *cmd;
@@ -1581,6 +1678,8 @@ static BuildResult build(BuildConfig *build_config, Target *target) {
       cmd = get_inc_shared_lib_target_build_cmd(info);
     else
       cmd = get_full_shared_lib_target_build_cmd(info);
+  } else if (info->type == TypeCustom) {
+    cmd = get_custom_target_build_cmd(info);
   }
   if (!cmd) {
     info->build_result = BuildResultUpToDate;
