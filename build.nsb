@@ -1,0 +1,8 @@
+cflags = -Wall -Wextra -Iinclude -Ilibs
+build_dir = build
+
+[cns]
+type = static_lib
+src = src/**.c
+cflags = $cflags
+incpath = $build_dir
