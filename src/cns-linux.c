@@ -700,6 +700,30 @@ CnsError cns_udp_init(CnsCtx *ctx, CnsUdpInitInfo *info) {
   return CnsErrorOk;
 }
 
+void cns_udp_enable_broadcast_send(CnsCtx *ctx) {
+  i32 enable = 1;
+
+  for (u32 i = 0; i < ctx->servers.len; ++i)
+    if (ctx->servers.items[i].proto == CnsProtoUDP)
+      setsockopt(ctx->servers.items[i].fd, SOL_SOCKET,
+                 SO_BROADCAST, &enable, sizeof(enable));
+  setsockopt(ctx->udp_client.fd, SOL_SOCKET, SO_BROADCAST, &enable, sizeof(enable));
+}
+
+void cns_udp_enable_multicast_receive(CnsCtx *ctx, char *group) {
+  struct ip_mreq mreq;
+  mreq.imr_multiaddr.s_addr = inet_addr(group);
+  mreq.imr_interface.s_addr = htonl(INADDR_ANY);
+
+  for (u32 i = 0; i < ctx->servers.len; ++i)
+    if (ctx->servers.items[i].proto == CnsProtoUDP)
+      setsockopt(ctx->servers.items[i].fd, IPPROTO_IP,
+                 IP_ADD_MEMBERSHIP, (char *) &mreq, sizeof(mreq));
+  setsockopt(ctx->udp_client.fd, IPPROTO_IP,
+             IP_ADD_MEMBERSHIP,
+             (char *) &mreq, sizeof(mreq));
+}
+
 CnsUdpDest *cns_udp_create_dest(CnsCtx *ctx, char *addr, unsigned short port) {
   if (ctx->udp_client.fd == 0)
     return NULL;

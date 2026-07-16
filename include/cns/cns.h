@@ -76,6 +76,8 @@ CnsError cns_tcp_connect(CnsCtx *ctx, char *addr, unsigned short port, CnsTcpCon
 void     cns_tcp_send(CnsConnection *connection, unsigned char *data, unsigned long data_len);
 // UDP
 CnsError    cns_udp_init(CnsCtx *ctx, CnsUdpInitInfo *info);
+void        cns_udp_enable_broadcast_send(CnsCtx *ctx);
+void        cns_udp_enable_multicast_receive(CnsCtx *ctx, char *group);
 CnsUdpDest *cns_udp_create_dest(CnsCtx *ctx, char *addr, unsigned short port);
 void        cns_udp_send(CnsUdpDest *dest, unsigned char *data, unsigned long data_len);
 void        cns_udp_destroy_dest(CnsUdpDest *dest);
