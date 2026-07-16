@@ -1344,6 +1344,8 @@ static char *get_target_obj_build_cmd(TargetBuildInfo *info, u32 index) {
     return NULL;
   }
 
+  make_directory(obj_path, true);
+
   StringBuilder sb = {0};
   sb_append_str(&sb, info->compiler);
   if (info->cflags.len > 0) {
@@ -1354,7 +1356,6 @@ static char *get_target_obj_build_cmd(TargetBuildInfo *info, u32 index) {
   sb_append_str(&sb, choose_compiler_objective_output_prefix());
   if (get_quote_output_file())
     sb_append_char(&sb, '"');
-  make_directory(obj_path, true);
   sb_append_str(&sb, obj_path);
   if (get_quote_output_file())
     sb_append_char(&sb, '"');
@@ -1370,13 +1371,14 @@ static char *get_inc_executable_target_build_cmd(TargetBuildInfo *info) {
   if (!info->rebuild && !needs_rebuild_deps(&info->deps, info->file))
     return NULL;
 
+  make_directory(info->file, true);
+
   StringBuilder sb = {0};
   sb_append_str(&sb, info->compiler);
   sb_append_char(&sb, ' ');
   sb_append_str(&sb, choose_compiler_executable_output_prefix());
   if (get_quote_output_file())
     sb_append_char(&sb, '"');
-  make_directory(info->file, true);
   sb_append_str(&sb, info->file);
   if (get_quote_output_file())
     sb_append_char(&sb, '"');
@@ -1409,14 +1411,11 @@ static char *get_full_executable_target_build_cmd(TargetBuildInfo *info) {
       return NULL;
   }
 
+  make_directory(info->file, true);
+
   StringBuilder sb = {0};
   sb_append_str(&sb, info->compiler);
   sb_append_char(&sb, ' ');
-  u32 saved_len = sb.len;
-  sb_append_str(&sb, choose_compiler_executable_output_prefix());
-  sb_append_str(&sb, info->file);
-  make_directory((Str) { sb.items + saved_len, sb.len - saved_len }, true);
-  sb.len = saved_len;
   sb_append_str(&sb, choose_compiler_executable_output_prefix());
   if (get_quote_output_file())
     sb_append_char(&sb, '"');
@@ -1460,6 +1459,8 @@ static char *get_static_lib_target_build_cmd(TargetBuildInfo *info) {
     return NULL;
   }
 
+  make_directory(info->file, true);
+
   StringBuilder sb = {0};
   sb_append_str(&sb, info->archiver);
   if (info->arflags.len > 0) {
@@ -1467,10 +1468,8 @@ static char *get_static_lib_target_build_cmd(TargetBuildInfo *info) {
     sb_append_str(&sb, info->arflags);
   }
   sb_append_char(&sb, ' ');
-  u32 saved_len = sb.len;
   sb_append_str(&sb, choose_archiver_output_prefix());
   sb_append_str(&sb, info->file);
-  make_directory((Str) { sb.items + saved_len, sb.len - saved_len }, true);
   sb_append_strs(&sb, &obj_paths);
   sb_append_char(&sb, '\0');
 
@@ -1535,13 +1534,13 @@ static char *get_full_shared_lib_target_build_cmd(TargetBuildInfo *info) {
       return NULL;
   }
 
+  make_directory(info->file, true);
+
   StringBuilder sb = {0};
   sb_append_str(&sb, info->compiler);
   sb_append_char(&sb, ' ');
-  u32 saved_len = sb.len;
   sb_append_str(&sb, choose_compiler_shared_lib_output_prefix());
   sb_append_str(&sb, info->file);
-  make_directory((Str) { sb.items + saved_len, sb.len - saved_len }, true);
   if (info->cflags.len > 0) {
     sb_append_char(&sb, ' ');
     sb_append_str(&sb, info->cflags);
