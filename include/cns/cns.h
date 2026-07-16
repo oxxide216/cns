@@ -19,32 +19,42 @@ typedef enum {
 
 typedef enum {
   CnsProtoTCP = 0,
+  CnsProtoUDP,
 } CnsProto;
 
 typedef struct CnsCtx CnsCtx;
-
 typedef struct CnsConnection CnsConnection;
+typedef struct CnsUdpDest CnsUdpDest;
+typedef struct CnsTimer CnsTimer;
 
-// If any of these functions returns CnsResultNotOk, close the connection
+// If any of these functions returns CnsResultNotOk, close the connection (or stop the timer)
 typedef CnsResult (*CnsConnectedCallback)(CnsCtx *ctx, CnsConnection *connection);
-typedef CnsResult (*CnsDataCallback)(CnsCtx *ctx, CnsConnection *connection, unsigned char *data, unsigned long data_len);
+typedef CnsResult (*CnsConnectionDataCallback)(CnsCtx *ctx, CnsConnection *connection, unsigned char *data, unsigned long data_len);
+typedef CnsResult (*CnsDataCallback)(CnsCtx *ctx, unsigned char *data, unsigned long data_len);
 typedef void      (*CnsDisconnectedCallback)(CnsCtx *ctx, CnsConnection *connection);
+typedef CnsResult (*CnsTimerCallback)(CnsCtx *ctx, CnsTimer *timer);
 
 typedef struct {
-  CnsProto                proto;
-  unsigned int            receive_timeout;
-  CnsConnectedCallback    connected_cb;
-  CnsDataCallback         data_cb;
-  CnsDisconnectedCallback disconnected_cb;
+  CnsProto                  proto;
+  unsigned int              receive_timeout;
+  CnsConnectedCallback      connected_cb; // For UDP, called when packet from new
+                                          // client is received for the first time,
+                                          // before data_cb
+  CnsConnectionDataCallback data_cb;
+  CnsDisconnectedCallback   disconnected_cb; // TCP only
 } CnsListenInfo;
 
 typedef struct {
-  CnsProto                proto;
-  unsigned int            receive_timeout;
-  CnsConnectedCallback    connected_cb;
-  CnsDataCallback         data_cb;
-  CnsDisconnectedCallback disconnected_cb;
-} CnsConnectInfo;
+  unsigned int              receive_timeout;
+  CnsConnectedCallback      connected_cb;
+  CnsConnectionDataCallback data_cb;
+  CnsDisconnectedCallback   disconnected_cb;
+} CnsTcpConnectInfo;
+
+typedef struct {
+  unsigned int    receive_timeout;
+  CnsDataCallback data_cb;
+} CnsUdpInitInfo;
 
 #ifdef __cplusplus
 extern "C" {
@@ -58,18 +68,38 @@ void    cns_run(CnsCtx *ctx);
 void    cns_stop(CnsCtx *ctx);
 void    cns_destroy(CnsCtx *ctx);
 
-// Networking
+// Common networking (both TCP and UDP)
 CnsError cns_listen(CnsCtx *ctx, unsigned short port, CnsListenInfo *info);
-CnsError cns_connect(CnsCtx *ctx, char *addr, unsigned short port, CnsConnectInfo *info);
-void     cns_send(CnsConnection *connection, unsigned char *data, unsigned long data_len);
 void     cns_close(CnsCtx *ctx, CnsConnection *connection);
+// TCP
+CnsError cns_tcp_connect(CnsCtx *ctx, char *addr, unsigned short port, CnsTcpConnectInfo *info);
+void     cns_tcp_send(CnsConnection *connection, unsigned char *data, unsigned long data_len);
+// UDP
+CnsError    cns_udp_init(CnsCtx *ctx, CnsUdpInitInfo *info);
+CnsUdpDest *cns_udp_create_dest(CnsCtx *ctx, char *addr, unsigned short port);
+void        cns_udp_send(CnsUdpDest *dest, unsigned char *data, unsigned long data_len);
+void        cns_udp_destroy_dest(CnsUdpDest *dest);
 
-// Getters and setters
-void *cns_get_user_data(CnsCtx *ctx);
-void  cns_set_user_data(CnsCtx *ctx, void *user_data);
-void *cns_get_connection_user_data(CnsConnection *connection);
-void  cns_set_connection_user_data(CnsConnection *connection, void *user_data);
-char *cns_get_connection_address(CnsConnection *connection);
+// Timers
+// repeat_timeout_ms == 0 means no repeating
+CnsTimer *cns_start_timer(CnsCtx *ctx, unsigned long start_timeout_ms,
+                          unsigned long repeat_timeout_ms, CnsTimerCallback tick_cb);
+void      cns_stop_timer(CnsCtx *ctx, CnsTimer *timer);
+
+// Common getters and setters
+void           *cns_get_user_data(CnsCtx *ctx);
+void            cns_set_user_data(CnsCtx *ctx, void *user_data);
+void           *cns_get_connection_user_data(CnsConnection *connection);
+void            cns_set_connection_user_data(CnsConnection *connection, void *user_data);
+char           *cns_get_connection_address(CnsConnection *connection);
+unsigned short  cns_get_connection_port(CnsConnection *connection);
+void           *cns_get_timer_user_data(CnsTimer *timer);
+void            cns_set_timer_user_data(CnsTimer *timer, void *user_data);
+// UDP-related getters
+CnsUdpDest     *cns_udp_get_connection_dest(CnsConnection *connection);
+char           *cns_udp_get_dest_address(CnsUdpDest *dest);
+unsigned short  cns_udp_get_dest_port(CnsUdpDest *dest);
+
 
 // Utils
 char *cns_get_error_str(CnsError error);

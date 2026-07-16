@@ -30,20 +30,21 @@ void disconnected(CnsCtx *ctx, CnsConnection *connection) {
 int main(void) {
   CnsCtx *cns = cns_create();
 
-  CnsConnectInfo connect_info = {
-    .proto = CnsProtoTCP,
+  CnsTcpConnectInfo connect_info = {
     .receive_timeout = 15,
     .connected_cb = connected,
     .data_cb = data,
     .disconnected_cb = disconnected,
   };
-  CnsError error = cns_connect(cns, SERVER_ADDRESS, SERVER_PORT, &connect_info);
+  CnsError error = cns_tcp_connect(cns, SERVER_ADDRESS, SERVER_PORT, &connect_info);
   if (error != CnsErrorOk) {
     fprintf(stderr, "[ERROR] Failed to connect to server: %s\n", cns_get_error_str(error));
     return 1;
   }
 
   cns_run(cns);
+
+  cns_destroy(cns);
 
   return 0;
 }

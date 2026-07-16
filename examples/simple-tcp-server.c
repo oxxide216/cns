@@ -14,7 +14,7 @@ CnsResult timer_tick(CnsCtx *ctx, CnsTimer *timer) {
 
   unsigned long client_index = (unsigned long) cns_get_timer_user_data(timer);
   char data[] = "Hello!\n";
-  cns_send(client_connections[client_index], (unsigned char *) data, sizeof(data) - 1);
+  cns_tcp_send(client_connections[client_index], (unsigned char *) data, sizeof(data) - 1);
 
   printf("[INFO] Sent %lu bytes of data to client %s\n",
          sizeof(data) - 1,
@@ -86,6 +86,8 @@ int main(void) {
   }
 
   cns_run(cns);
+
+  cns_destroy(cns);
 
   return 0;
 }

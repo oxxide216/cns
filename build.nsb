@@ -6,3 +6,23 @@ type = static_lib
 src = src/**.c
 cflags = $cflags
 incpath = $build_dir
+
+[build/examples/simple-tcp-server]
+src = examples/simple-tcp-server.c
+cflags = $cflags
+deps = cns
+
+[build/examples/simple-tcp-client]
+src = examples/simple-tcp-client.c
+cflags = $cflags
+deps = cns
+
+[build/examples/simple-udp-server]
+src = examples/simple-udp-server.c
+cflags = $cflags
+deps = cns
+
+[build/examples/simple-udp-client]
+src = examples/simple-udp-client.c
+cflags = $cflags
+deps = cns
