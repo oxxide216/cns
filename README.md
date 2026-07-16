@@ -8,3 +8,9 @@ Simple networking library written in C, providing an asynchronous interface over
 cc -o nsb nsb.c
 ./nsb
 ```
+
+Now you have libcns.a!
+
+## Usage
+
+For usage, see [examples directory](./examples).
