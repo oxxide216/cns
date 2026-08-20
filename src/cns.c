@@ -1,10 +1,14 @@
 #include <stdlib.h>
+#ifdef _WIN32
+#include <ws2tcpip.h>
+#else
 #include <unistd.h>
 #include <arpa/inet.h>
 #include <fcntl.h>
 #include <poll.h>
-#include <errno.h>
 #include <sys/time.h>
+#include <errno.h>
+#endif
 
 #include "cns/cns.h"
 #include "shl/shl-defs.h"
@@ -12,7 +16,18 @@
 #define MAIN_LOOP_DELAY         1000
 #define DEFAULT_DATA_BUFFER_CAP 1024
 
+#ifdef _WIN32
+#define MSG_DONTWAIT 0
+#define poll WSAPoll
+
+typedef SOCKET Fd;
+typedef i32 Size;
+typedef char SockOpt;
+#else
 typedef i32 Fd;
+typedef u32 Size;
+typedef i32 SockOpt;
+#endif
 
 struct CnsUdpDest {
   Fd                 fd;
@@ -92,7 +107,63 @@ struct CnsCtx {
   u32         tcp_clients_connected;
 };
 
+static void close_socket(Fd socket) {
+#ifdef _WIN32
+  closesocket(socket);
+#else
+  close(socket);
+#endif
+}
+
+static bool is_correct_socket(Fd socket) {
+#ifdef _WIN32
+  return socket != INVALID_SOCKET;
+#else
+  return socket < 0;
+#endif
+}
+
+static void cns_sleep(u64 delay_ms) {
+#ifdef _WIN32
+  Sleep(delay_ms);
+#else
+  usleep(delay_ms);
+#endif
+}
+
+static u64 get_current_time_ms(void) {
+#ifdef _WIN32
+  return timeGetTime();
+#else
+  struct timeval current_time;
+  gettimeofday(&current_time, NULL);
+  return current_time.tv_sec * 1000 + current_time.tv_usec / 1000;
+#endif
+}
+
+static void make_non_blocking(Fd fd) {
+#ifdef _WIN32
+  u_long enable = 1;
+  ioctlsocket(fd, FIONBIO, &enable);
+#else
+  fcntl(fd, F_SETFL, O_NONBLOCK);
+#endif
+}
+
+static bool is_correct_connect_result(i32 result) {
+#ifdef _WIN32
+  return result == 0 || WSAGetLastError() == WSAEWOULDBLOCK;
+#else
+  return result == 0 || errno == EINPROGRESS;
+#endif
+}
+
 CnsCtx *cns_create(void) {
+#ifdef _WIN32
+  WSADATA wsa_data;
+  WSAStartup(MAKEWORD(2,2), &wsa_data);
+#endif
+
   CnsCtx *ctx = malloc(sizeof(CnsCtx));
   memset(ctx, 0, sizeof(CnsCtx));
   ctx->stop = false;
@@ -102,13 +173,13 @@ CnsCtx *cns_create(void) {
 static void server_destroy(Server *server) {
   CnsConnection *connection = server->connections;
   while (connection) {
-    close(connection->fd);
+    close_socket(connection->fd);
     CnsConnection *next = connection->next;
     free(connection);
     connection = next;
   }
 
-  close(server->fd);
+  close_socket(server->fd);
 
   if (server->connection_poll_fds.items)
     free(server->connection_poll_fds.items);
@@ -117,14 +188,14 @@ static void server_destroy(Server *server) {
 }
 
 static void tcp_client_destroy(TcpClient *client) {
-  close(client->fd);
+  close_socket(client->fd);
 
   if (client->data.items)
     free(client->data.items);
 }
 
 static void udp_client_destroy(UdpClient *client) {
-  close(client->fd);
+  close_socket(client->fd);
   client->fd = 0;
 
   if (client->data.items)
@@ -139,9 +210,9 @@ static void main_loop_servers_accept_connections(CnsCtx *ctx) {
       continue;
 
     struct sockaddr_in address_info;
-    u32 address_info_size = sizeof(address_info);
+    Size address_info_size = sizeof(address_info);
     Fd client = accept(server->fd, (struct sockaddr *) &address_info, &address_info_size);
-    if (client < 0)
+    if (!is_correct_socket(client))
       continue;
 
     CnsConnection *prev_connections = server->connections;
@@ -171,7 +242,7 @@ static void main_loop_servers_accept_connections(CnsCtx *ctx) {
 }
 
 static i32 tcp_receive_data(Fd fd, Data *data) {
-  return recv(fd, data->items + data->len,
+  return recv(fd, (char *) data->items + data->len,
               data->cap - data->len, MSG_DONTWAIT);
 }
 
@@ -212,7 +283,7 @@ static void tcp_server_receive_data(CnsCtx *ctx, Server *server) {
       if (data->len > 0 && server->data_cb) {
         if (server->data_cb(ctx, *connection, data->items, data->len) != CnsResultOk) {
           data->len = 0;
-          close((*connection)->fd);
+          close_socket((*connection)->fd);
           CnsConnection *next = (*connection)->next;
           free(*connection);
           *connection = next;
@@ -230,8 +301,8 @@ static void tcp_server_receive_data(CnsCtx *ctx, Server *server) {
 }
 
 static i32 udp_receive_data(Fd fd, Data *data, struct sockaddr_in *address_info) {
-  u32 address_info_size = sizeof(*address_info);
-  return recvfrom(fd, data->items + data->len, data->cap - data->len,
+  Size address_info_size = sizeof(*address_info);
+  return recvfrom(fd, (char *) data->items + data->len, data->cap - data->len,
                   MSG_DONTWAIT, (struct sockaddr *) address_info, &address_info_size);
 }
 
@@ -348,8 +419,8 @@ static void main_loop_clients_confirm_connections(CnsCtx *ctx) {
       continue;
 
     if (poll_fd.revents & POLLOUT) {
-      i32 error;
-      u32 error_len = sizeof(error);
+      SockOpt error;
+      Size error_len = sizeof(error);
       getsockopt(client->fd, SOL_SOCKET, SO_ERROR, &error, &error_len);
 
       if (error == 0) {
@@ -443,9 +514,7 @@ static void main_loop_clients_receive_data(CnsCtx *ctx) {
 }
 
 void main_loop_timers_update(CnsCtx *ctx) {
-  struct timeval current_time;
-  gettimeofday(&current_time, NULL);
-  u64 current_time_ms = current_time.tv_sec * 1000 + current_time.tv_usec / 1000;
+  u64 current_time_ms = get_current_time_ms();
 
   CnsTimer **timer = &ctx->timers;
   while (*timer) {
@@ -495,7 +564,7 @@ int cns_step(CnsCtx *ctx, unsigned int delay_ms) {
   if (ctx->timers)
     main_loop_timers_update(ctx);
 
-  usleep(delay_ms);
+  cns_sleep(delay_ms);
 
   return !ctx->stop &&
          (ctx->servers.len > 0 ||
@@ -513,6 +582,10 @@ void cns_stop(CnsCtx *ctx) {
 }
 
 void cns_destroy(CnsCtx *ctx) {
+#ifdef _WIN32
+  WSACleanup();
+#endif
+
   for (u32 i = 0; i < ctx->servers.len; ++i)
     server_destroy(ctx->servers.items + i);
   if (ctx->servers.items)
@@ -538,14 +611,14 @@ static i32 proto_to_socket_type(CnsProto proto) {
 }
 
 CnsError cns_listen(CnsCtx *ctx, unsigned short port, CnsListenInfo *info) {
-  i32 enable = 1;
+  SockOpt enable = 1;
 
   Fd sock = socket(AF_INET, proto_to_socket_type(info->proto), 0);
-  if (sock < 0)
+  if (!is_correct_socket(sock))
     return CnsErrorCouldNotCreateSocket;
 
   setsockopt(sock, SOL_SOCKET, SO_REUSEADDR, &enable, sizeof(enable));
-  fcntl(sock, F_SETFL, O_NONBLOCK);
+  make_non_blocking(sock);
 
   struct sockaddr_in address;
   address.sin_family = AF_INET;
@@ -553,13 +626,13 @@ CnsError cns_listen(CnsCtx *ctx, unsigned short port, CnsListenInfo *info) {
   address.sin_addr.s_addr = htonl(INADDR_ANY);
 
   if (bind(sock, (struct sockaddr *) &address, sizeof(address)) < 0) {
-    close(sock);
+    close_socket(sock);
     return CnsErrorCouldNotBind;
   }
 
   if (info->proto == CnsProtoTCP) {
     if (listen(sock, 0) < 0) {
-      close(sock);
+      close_socket(sock);
       return CnsErrorCouldNotListen;
     }
   }
@@ -591,7 +664,7 @@ void cns_close(CnsCtx *ctx, CnsConnection *connection) {
     u32 i = 0;
     while (*_connection && i < server->connection_poll_fds.len) {
       if (*_connection == connection) {
-        close((*_connection)->fd);
+        close_socket((*_connection)->fd);
         CnsConnection *next = (*_connection)->next;
         free(*_connection);
         *_connection = next;
@@ -610,27 +683,27 @@ void cns_close(CnsCtx *ctx, CnsConnection *connection) {
 }
 
 CnsError cns_tcp_connect(CnsCtx *ctx, char *addr, unsigned short port, CnsTcpConnectInfo *info) {
-  i32 enable = 1;
+  SockOpt enable = 1;
 
   Fd sock = socket(AF_INET, SOCK_STREAM, 0);
-  if (sock < 0)
+  if (!is_correct_socket(sock))
     return CnsErrorCouldNotCreateSocket;
 
   setsockopt(sock, SOL_SOCKET, SO_REUSEADDR, &enable, sizeof(enable));
-  fcntl(sock, F_SETFL, O_NONBLOCK);
+  make_non_blocking(sock);
 
   struct sockaddr_in address_info;
   address_info.sin_family = AF_INET;
   address_info.sin_port = htons(port);
 
   if (inet_pton(AF_INET, addr, &address_info.sin_addr) < 0) {
-    close(sock);
+    close_socket(sock);
     return CnsErrorInvalidAddress;
   }
 
   i32 result = connect(sock, (struct sockaddr *) &address_info, sizeof(address_info));
-  if (result != 0 && errno != EINPROGRESS) {
-    close(sock);
+  if (!is_correct_connect_result(result)) {
+    close_socket(sock);
     return CnsErrorCouldNotConnect;
   }
 
@@ -672,18 +745,18 @@ CnsError cns_tcp_connect(CnsCtx *ctx, char *addr, unsigned short port, CnsTcpCon
 
 void cns_tcp_send(CnsConnection *connection, unsigned char *data, unsigned long data_len) {
   if (connection->proto == CnsProtoTCP)
-    send(connection->fd, data, data_len, MSG_DONTWAIT);
+    send(connection->fd, (char *) data, data_len, MSG_DONTWAIT);
 }
 
 CnsError cns_udp_init(CnsCtx *ctx, CnsUdpInitInfo *info) {
-  i32 enable = 1;
+  SockOpt enable = 1;
 
   Fd sock = socket(AF_INET, SOCK_DGRAM, 0);
-  if (sock < 0)
+  if (!is_correct_socket(sock))
     return CnsErrorCouldNotCreateSocket;
 
   setsockopt(sock, SOL_SOCKET, SO_REUSEADDR, &enable, sizeof(enable));
-  fcntl(sock, F_SETFL, O_NONBLOCK);
+  make_non_blocking(sock);
 
   Data data;
   data.len = 0;
@@ -701,7 +774,7 @@ CnsError cns_udp_init(CnsCtx *ctx, CnsUdpInitInfo *info) {
 }
 
 void cns_udp_enable_broadcast_send(CnsCtx *ctx) {
-  i32 enable = 1;
+  SockOpt enable = 1;
 
   for (u32 i = 0; i < ctx->servers.len; ++i)
     if (ctx->servers.items[i].proto == CnsProtoUDP)
@@ -747,7 +820,7 @@ CnsUdpDest *cns_udp_create_dest(CnsCtx *ctx, char *addr, unsigned short port) {
 }
 
 void cns_udp_send(CnsUdpDest *dest, unsigned char *data, unsigned long data_len) {
-  sendto(dest->fd, data, data_len, MSG_DONTWAIT,
+  sendto(dest->fd, (char *) data, data_len, MSG_DONTWAIT,
          (struct sockaddr *) &dest->address_info,
          sizeof(dest->address_info));
 }
@@ -758,12 +831,9 @@ void cns_udp_destroy_dest(CnsUdpDest *dest) {
 
 CnsTimer *cns_start_timer(CnsCtx *ctx, unsigned long start_timeout_ms,
                           unsigned long repeat_timeout_ms, CnsTimerCallback tick_cb) {
-  struct timeval current_time;
-  gettimeofday(&current_time, NULL);
-
   LL_PREPEND(ctx->timers, ctx->timers_end, CnsTimer);
   *ctx->timers_end = (CnsTimer) {
-    current_time.tv_sec * 1000 + current_time.tv_usec / 1000,
+    get_current_time_ms(),
     0,
     start_timeout_ms,
     repeat_timeout_ms,
@@ -846,8 +916,4 @@ char *cns_get_error_str(CnsError error) {
   }
 
   return NULL;
-}
-
-void cns_make_non_blocking(FILE *stream) {
-  fcntl(fileno(stream), F_SETFL, O_NONBLOCK);
 }

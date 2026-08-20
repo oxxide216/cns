@@ -6,6 +6,7 @@ Simple networking library written in C, providing an asynchronous interface over
 
 ```shell
 cc -o nsb nsb.c
+cp build-<target-platform>.nsb build.nsb
 ./nsb
 ```
 

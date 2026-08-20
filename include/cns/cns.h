@@ -102,10 +102,8 @@ CnsUdpDest     *cns_udp_get_connection_dest(CnsConnection *connection);
 char           *cns_udp_get_dest_address(CnsUdpDest *dest);
 unsigned short  cns_udp_get_dest_port(CnsUdpDest *dest);
 
-
 // Utils
 char *cns_get_error_str(CnsError error);
-void  cns_make_non_blocking(FILE *stream);
 
 #ifdef __cplusplus
 }

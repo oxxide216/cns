@@ -1,53 +1,38 @@
 cflags = -Wall -Wextra -Iinclude -Ilibs
-ldflags = -lws2_32 -lwinmm
 build_dir = build
-cc = x86_64-w64-mingw32-gcc
 
 [cns]
 type = static_lib
-cc = $cc
 src = src/**.c
 cflags = $cflags
 incpath = $build_dir
 
-[build/examples/simple-tcp-server.exe]
-cc = $cc
+[build/examples/simple-tcp-server]
 src = examples/simple-tcp-server.c
 cflags = $cflags
-ldflags = $ldflags
 deps = cns
 
-[build/examples/simple-tcp-client.exe]
-cc = $cc
+[build/examples/simple-tcp-client]
 src = examples/simple-tcp-client.c
 cflags = $cflags
-ldflags = $ldflags
 deps = cns
 
-[build/examples/simple-udp-server.exe]
-cc = $cc
+[build/examples/simple-udp-server]
 src = examples/simple-udp-server.c
 cflags = $cflags
-ldflags = $ldflags
 deps = cns
 
-[build/examples/simple-udp-client.exe]
-cc = $cc
+[build/examples/simple-udp-client]
 src = examples/simple-udp-client.c
 cflags = $cflags
-ldflags = $ldflags
 deps = cns
 
-[build/examples/simple-udp-multicast-server.exe]
-cc = $cc
+[build/examples/simple-udp-multicast-server]
 src = examples/simple-udp-multicast-server.c
 cflags = $cflags
-ldflags = $ldflags
 deps = cns
 
-[build/examples/simple-udp-multicast-client.exe]
-cc = $cc
+[build/examples/simple-udp-multicast-client]
 src = examples/simple-udp-multicast-client.c
 cflags = $cflags
-ldflags = $ldflags
 deps = cns

@@ -5,18 +5,28 @@
 #define PORT        2160
 #define CLIENTS_MAX 10
 
+#ifdef _WIN32
+#define DATA_SIZE_FMT "%llu"
+
+typedef unsigned long long u64;
+#else
+#define DATA_SIZE_FMT "%lu"
+
+typedef unsigned long u64;
+#endif
+
 static CnsConnection *client_connections[CLIENTS_MAX];
 static CnsTimer *client_timers[CLIENTS_MAX];
-static unsigned long clients_len = 0;
+static u64 clients_len = 0;
 
 CnsResult timer_tick(CnsCtx *ctx, CnsTimer *timer) {
   (void) ctx;
 
-  unsigned long client_index = (unsigned long) cns_get_timer_user_data(timer);
+  u64 client_index = (u64) cns_get_timer_user_data(timer);
   char data[] = "Hello!\n";
   cns_tcp_send(client_connections[client_index], (unsigned char *) data, sizeof(data) - 1);
 
-  printf("[INFO] Sent %lu bytes of data to client %s\n",
+  printf("[INFO] Sent "DATA_SIZE_FMT" bytes of data to client %s\n",
          sizeof(data) - 1,
          cns_get_connection_address(client_connections[client_index]));
 
@@ -56,7 +66,7 @@ CnsResult data(CnsCtx *ctx, CnsConnection *connection, unsigned char *data, unsi
 void disconnected(CnsCtx *ctx, CnsConnection *connection) {
   printf("[INFO] Client %s disconnected\n", cns_get_connection_address(connection));
 
-  unsigned long client_index = (unsigned long) cns_get_connection_user_data(connection);
+  u64 client_index = (u64) cns_get_connection_user_data(connection);
 
   cns_stop_timer(ctx, client_timers[client_index]);
 

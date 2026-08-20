@@ -3,6 +3,12 @@
 #define SERVER_ADDRESS "127.0.0.1"
 #define SERVER_PORT    2160
 
+#ifdef _WIN32
+#define DATA_SIZE_FMT "%llu"
+#else
+#define DATA_SIZE_FMT "%lu"
+#endif
+
 static CnsUdpDest *dest = NULL;
 
 CnsResult timer_tick(CnsCtx *ctx, CnsTimer *timer) {
@@ -12,7 +18,7 @@ CnsResult timer_tick(CnsCtx *ctx, CnsTimer *timer) {
   char data[] = "Hello!\n";
   cns_udp_send(dest, (unsigned char *) data, sizeof(data) - 1);
 
-  printf("[INFO] Sent %lu bytes of data to server %s:%u\n",
+  printf("[INFO] Sent "DATA_SIZE_FMT" bytes of data to server %s:%u\n",
          sizeof(data) - 1,
          cns_udp_get_dest_address(dest),
          cns_udp_get_dest_port(dest));
