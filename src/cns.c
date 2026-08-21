@@ -119,7 +119,7 @@ static bool is_correct_socket(Fd socket) {
 #ifdef _WIN32
   return socket != INVALID_SOCKET;
 #else
-  return socket < 0;
+  return socket >= 0;
 #endif
 }
 
