@@ -4,8 +4,9 @@
 
 CnsResult connected(CnsCtx *ctx, CnsConnection *connection) {
   (void) ctx;
+  (void) connection;
 
-  printf("[INFO] Connected to server %s!\n", cns_get_connection_address(connection));
+  printf("[INFO] Connected to server!\n");
 
   return CnsResultOk;
 }
@@ -22,8 +23,9 @@ CnsResult data(CnsCtx *ctx, CnsConnection *connection, unsigned char *data, unsi
 
 void disconnected(CnsCtx *ctx, CnsConnection *connection) {
   (void) ctx;
+  (void) connection;
 
-  printf("[INFO] Disconnected from server %s\n", cns_get_connection_address(connection));
+  printf("[INFO] Disconnected from server\n");
 }
 
 int main(void) {
