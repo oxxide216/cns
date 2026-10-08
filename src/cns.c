@@ -7,6 +7,7 @@
 #include <fcntl.h>
 #include <poll.h>
 #include <sys/time.h>
+#include <sys/un.h>
 #include <errno.h>
 #endif
 
@@ -37,7 +38,10 @@ struct CnsUdpDest {
 
 struct CnsConnection {
   Fd                  fd;
-  struct sockaddr_in  address_info;
+  union {
+    struct sockaddr_in  address_info;
+    struct sockaddr_un *address_info_unix;
+  };
   CnsProto            proto;
   char                address[INET_ADDRSTRLEN];
   CnsUdpDest          udp_dest;
@@ -72,6 +76,7 @@ typedef struct {
   CnsConnectedCallback       connected_cb;
   CnsConnectionDataCallback  data_cb;
   CnsDisconnectedCallback    disconnected_cb;
+  const char                *unix_socket_path;
 } Server;
 
 typedef Da(Server) Servers;
@@ -85,9 +90,9 @@ typedef struct {
   CnsConnectedCallback      connected_cb;
   CnsConnectionDataCallback data_cb;
   CnsDisconnectedCallback   disconnected_cb;
-} TcpClient;
+} TcpUnixClient;
 
-typedef Da(TcpClient) TcpClients;
+typedef Da(TcpUnixClient) TcpUnixClients;
 
 typedef struct {
   Fd              fd;
@@ -97,14 +102,14 @@ typedef struct {
 } UdpClient;
 
 struct CnsCtx {
-  Servers     servers;
-  TcpClients  tcp_clients;
-  UdpClient   udp_client;
-  CnsTimer   *timers;
-  CnsTimer   *timers_end;
-  void       *user_data;
-  bool        stop;
-  u32         tcp_clients_connected;
+  Servers         servers;
+  TcpUnixClients  tcp_unix_clients;
+  UdpClient       udp_client;
+  CnsTimer       *timers;
+  CnsTimer       *timers_end;
+  void           *user_data;
+  bool            stop;
+  u32             tcp_unix_clients_connected;
 };
 
 static void close_socket(Fd socket) {
@@ -174,12 +179,19 @@ static void server_destroy(Server *server) {
   CnsConnection *connection = server->connections;
   while (connection) {
     close_socket(connection->fd);
+    if (connection->proto == CnsProtoUnix)
+      free(connection->address_info_unix);
     CnsConnection *next = connection->next;
     free(connection);
     connection = next;
   }
 
   close_socket(server->fd);
+  if (server->proto == CnsProtoUnix) {
+#ifndef _WIN32
+    unlink(server->unix_socket_path);
+#endif
+  }
 
   if (server->connection_poll_fds.items)
     free(server->connection_poll_fds.items);
@@ -187,8 +199,10 @@ static void server_destroy(Server *server) {
     free(server->data.items);
 }
 
-static void tcp_client_destroy(TcpClient *client) {
+static void tcp_unix_client_destroy(TcpUnixClient *client) {
   close_socket(client->fd);
+  if (client->connection.proto == CnsProtoUnix)
+    free(client->connection.address_info_unix);
 
   if (client->data.items)
     free(client->data.items);
@@ -246,7 +260,7 @@ static i32 tcp_receive_data(Fd fd, Data *data) {
               data->cap - data->len, MSG_DONTWAIT);
 }
 
-static void tcp_server_receive_data(CnsCtx *ctx, Server *server) {
+static void tcp_unix_server_receive_data(CnsCtx *ctx, Server *server) {
   Data *data = &server->data;
 
   if (poll(server->connection_poll_fds.items,
@@ -395,8 +409,9 @@ static void main_loop_servers_receive_data(CnsCtx *ctx) {
     Server *server = ctx->servers.items + i;
 
     switch (server->proto) {
-    case CnsProtoTCP: {
-      tcp_server_receive_data(ctx, server);
+    case CnsProtoTCP:
+    case CnsProtoUnix: {
+      tcp_unix_server_receive_data(ctx, server);
     } break;
 
     case CnsProtoUDP: {
@@ -407,8 +422,8 @@ static void main_loop_servers_receive_data(CnsCtx *ctx) {
 }
 
 static void main_loop_clients_confirm_connections(CnsCtx *ctx) {
-  for (u32 i = 0; i < ctx->tcp_clients.len; ++i) {
-    TcpClient *client = ctx->tcp_clients.items + i;
+  for (u32 i = 0; i < ctx->tcp_unix_clients.len; ++i) {
+    TcpUnixClient *client = ctx->tcp_unix_clients.items + i;
 
     if (client->connected)
       continue;
@@ -426,21 +441,21 @@ static void main_loop_clients_confirm_connections(CnsCtx *ctx) {
       if (error == 0) {
         if (client->connected_cb) {
           if (client->connected_cb(ctx, &client->connection) != CnsResultOk) {
-            tcp_client_destroy(client);
-            DA_REMOVE_AT(ctx->tcp_clients, i);
+            tcp_unix_client_destroy(client);
+            DA_REMOVE_AT(ctx->tcp_unix_clients, i);
             --i;
           } else {
             client->connected = true;
-            ++ctx->tcp_clients_connected;
+            ++ctx->tcp_unix_clients_connected;
           }
         } else {
           client->connected = true;
-          ++ctx->tcp_clients_connected;
+          ++ctx->tcp_unix_clients_connected;
         }
       } else {
         if (client->disconnected_cb)
           client->disconnected_cb(ctx, &client->connection);
-        DA_REMOVE_AT(ctx->tcp_clients, i);
+        DA_REMOVE_AT(ctx->tcp_unix_clients, i);
         --i;
       }
     }
@@ -448,8 +463,8 @@ static void main_loop_clients_confirm_connections(CnsCtx *ctx) {
 }
 
 static void main_loop_clients_receive_data(CnsCtx *ctx) {
-  for (u32 i = 0; i < ctx->tcp_clients.len; ++i) {
-    TcpClient *client = ctx->tcp_clients.items + i;
+  for (u32 i = 0; i < ctx->tcp_unix_clients.len; ++i) {
+    TcpUnixClient *client = ctx->tcp_unix_clients.items + i;
     Data *data = &client->data;
 
     if (!client->connected)
@@ -475,19 +490,19 @@ static void main_loop_clients_receive_data(CnsCtx *ctx) {
     if (len == 0) {
       if (client->disconnected_cb)
         client->disconnected_cb(ctx, &client->connection);
-      tcp_client_destroy(client);
-      DA_REMOVE_AT(ctx->tcp_clients, i);
+      tcp_unix_client_destroy(client);
+      DA_REMOVE_AT(ctx->tcp_unix_clients, i);
       --i;
-      --ctx->tcp_clients_connected;
+      --ctx->tcp_unix_clients_connected;
       continue;
     }
 
     if (data->len > 0 && client->data_cb) {
       if (client->data_cb(ctx, &client->connection, data->items, data->len) != CnsResultOk) {
-        tcp_client_destroy(client);
-        DA_REMOVE_AT(ctx->tcp_clients, i);
+        tcp_unix_client_destroy(client);
+        DA_REMOVE_AT(ctx->tcp_unix_clients, i);
         --i;
-        --ctx->tcp_clients_connected;
+        --ctx->tcp_unix_clients_connected;
         continue;
       }
     }
@@ -549,7 +564,7 @@ void main_loop_timers_update(CnsCtx *ctx) {
 int cns_step(CnsCtx *ctx, unsigned int delay_ms) {
   if (ctx->stop ||
       (ctx->servers.len == 0 &&
-       ctx->tcp_clients.len == 0 &&
+       ctx->tcp_unix_clients.len == 0 &&
        ctx->udp_client.fd == 0 &&
        !ctx->timers))
     return 0;
@@ -557,7 +572,7 @@ int cns_step(CnsCtx *ctx, unsigned int delay_ms) {
   main_loop_servers_accept_connections(ctx);
   main_loop_servers_receive_data(ctx);
 
-  if (ctx->tcp_clients_connected < ctx->tcp_clients.len || ctx->udp_client.fd != 0)
+  if (ctx->tcp_unix_clients_connected < ctx->tcp_unix_clients.len || ctx->udp_client.fd != 0)
     main_loop_clients_confirm_connections(ctx);
   main_loop_clients_receive_data(ctx);
 
@@ -568,7 +583,7 @@ int cns_step(CnsCtx *ctx, unsigned int delay_ms) {
 
   return !ctx->stop &&
          (ctx->servers.len > 0 ||
-          ctx->tcp_clients.len > 0 ||
+          ctx->tcp_unix_clients.len > 0 ||
           ctx->udp_client.fd != 0 ||
           ctx->timers);
 }
@@ -591,10 +606,10 @@ void cns_destroy(CnsCtx *ctx) {
   if (ctx->servers.items)
     free(ctx->servers.items);
 
-  for (u32 i = 0; i < ctx->tcp_clients.len; ++i)
-    tcp_client_destroy(ctx->tcp_clients.items + i);
-  if (ctx->tcp_clients.items)
-    free(ctx->tcp_clients.items);
+  for (u32 i = 0; i < ctx->tcp_unix_clients.len; ++i)
+    tcp_unix_client_destroy(ctx->tcp_unix_clients.items + i);
+  if (ctx->tcp_unix_clients.items)
+    free(ctx->tcp_unix_clients.items);
 
   udp_client_destroy(&ctx->udp_client);
 
@@ -603,8 +618,9 @@ void cns_destroy(CnsCtx *ctx) {
 
 static i32 proto_to_socket_type(CnsProto proto) {
   switch (proto) {
-  case CnsProtoTCP: return SOCK_STREAM;
-  case CnsProtoUDP: return SOCK_DGRAM;
+  case CnsProtoTCP:  return SOCK_STREAM;
+  case CnsProtoUDP:  return SOCK_DGRAM;
+  case CnsProtoUnix: return SOCK_STREAM;
   }
 
   return 0;
@@ -625,7 +641,7 @@ CnsError cns_listen(CnsCtx *ctx, unsigned short port, CnsListenInfo *info) {
   address.sin_port = htons(port);
   address.sin_addr.s_addr = htonl(INADDR_ANY);
 
-  if (bind(sock, (struct sockaddr *) &address, sizeof(address)) < 0) {
+  if (bind(sock, (struct sockaddr *) &address, sizeof(struct sockaddr_in)) < 0) {
     close_socket(sock);
     return CnsErrorCouldNotBind;
   }
@@ -650,6 +666,51 @@ CnsError cns_listen(CnsCtx *ctx, unsigned short port, CnsListenInfo *info) {
     info->connected_cb,
     info->data_cb,
     info->disconnected_cb,
+    NULL,
+  };
+  DA_APPEND(ctx->servers, server);
+
+  return CnsErrorOk;
+}
+
+CnsError cns_unix_listen(CnsCtx *ctx, const char *path, CnsListenInfo *info) {
+  Fd sock = socket(AF_UNIX, SOCK_STREAM, 0);
+  if (!is_correct_socket(sock))
+    return CnsErrorCouldNotCreateSocket;
+
+#ifndef _WIN32
+  unlink(path);
+#endif
+  make_non_blocking(sock);
+
+  struct sockaddr_un *address = malloc(sizeof(sa_family_t) + strlen(path) + 1);
+  address->sun_family = AF_UNIX;
+  strcpy(address->sun_path, path);
+
+  if (bind(sock, (struct sockaddr *) address, sizeof(struct sockaddr_un)) < 0) {
+    close_socket(sock);
+    return CnsErrorCouldNotBind;
+  }
+
+  if (listen(sock, 0) < 0) {
+    close_socket(sock);
+    return CnsErrorCouldNotListen;
+  }
+
+  Data data;
+  data.len = 0;
+  data.cap = DEFAULT_DATA_BUFFER_CAP;
+  data.items = malloc(data.cap);
+
+  Server server = {
+    sock,
+    CnsProtoUnix,
+    info->receive_timeout,
+    NULL, NULL, {}, data,
+    info->connected_cb,
+    info->data_cb,
+    info->disconnected_cb,
+    path,
   };
   DA_APPEND(ctx->servers, server);
 
@@ -677,31 +738,28 @@ void cns_close(CnsCtx *ctx, CnsConnection *connection) {
       ++i;
     }
   } else if (connection->owner_client_index != (u32) -1) {
-    tcp_client_destroy(ctx->tcp_clients.items + connection->owner_client_index);
-    DA_REMOVE_AT(ctx->tcp_clients, connection->owner_client_index);
+    tcp_unix_client_destroy(ctx->tcp_unix_clients.items + connection->owner_client_index);
+    DA_REMOVE_AT(ctx->tcp_unix_clients, connection->owner_client_index);
   }
 }
 
-CnsError cns_tcp_connect(CnsCtx *ctx, char *addr, unsigned short port, CnsTcpConnectInfo *info) {
-  SockOpt enable = 1;
-
+CnsError cns_tcp_connect(CnsCtx *ctx, const char *addr, unsigned short port, CnsTcpConnectInfo *info) {
   Fd sock = socket(AF_INET, SOCK_STREAM, 0);
   if (!is_correct_socket(sock))
     return CnsErrorCouldNotCreateSocket;
 
-  setsockopt(sock, SOL_SOCKET, SO_REUSEADDR, &enable, sizeof(enable));
   make_non_blocking(sock);
 
-  struct sockaddr_in address_info;
-  address_info.sin_family = AF_INET;
-  address_info.sin_port = htons(port);
+  struct sockaddr_in address;
+  address.sin_family = AF_INET;
+  address.sin_port = htons(port);
 
-  if (inet_pton(AF_INET, addr, &address_info.sin_addr) < 0) {
+  if (inet_pton(AF_INET, addr, &address.sin_addr) < 0) {
     close_socket(sock);
     return CnsErrorInvalidAddress;
   }
 
-  i32 result = connect(sock, (struct sockaddr *) &address_info, sizeof(address_info));
+  i32 result = connect(sock, (struct sockaddr *) &address, sizeof(address));
   if (!is_correct_connect_result(result)) {
     close_socket(sock);
     return CnsErrorCouldNotConnect;
@@ -709,13 +767,13 @@ CnsError cns_tcp_connect(CnsCtx *ctx, char *addr, unsigned short port, CnsTcpCon
 
   CnsConnection connection = {
     sock,
-    address_info,
+    { .address_info = address },
     CnsProtoTCP,
     {},
     {},
     NULL,
     (u32) -1,
-    ctx->tcp_clients.len,
+    ctx->tcp_unix_clients.len,
     NULL,
   };
   u32 addr_len = strlen(addr);
@@ -728,7 +786,7 @@ CnsError cns_tcp_connect(CnsCtx *ctx, char *addr, unsigned short port, CnsTcpCon
   data.cap = DEFAULT_DATA_BUFFER_CAP;
   data.items = malloc(data.cap);
 
-  TcpClient client = {
+  TcpUnixClient client = {
     sock,
     info->receive_timeout,
     false,
@@ -738,13 +796,13 @@ CnsError cns_tcp_connect(CnsCtx *ctx, char *addr, unsigned short port, CnsTcpCon
     info->data_cb,
     info->disconnected_cb,
   };
-  DA_APPEND(ctx->tcp_clients, client);
+  DA_APPEND(ctx->tcp_unix_clients, client);
 
   return CnsErrorOk;
 }
 
 void cns_tcp_send(CnsConnection *connection, unsigned char *data, unsigned long data_len) {
-  if (connection->proto == CnsProtoTCP)
+  if (connection->proto != CnsProtoUDP)
     send(connection->fd, (char *) data, data_len, MSG_DONTWAIT);
 }
 
@@ -797,7 +855,7 @@ void cns_udp_enable_multicast_receive(CnsCtx *ctx, char *group) {
              (char *) &mreq, sizeof(mreq));
 }
 
-CnsUdpDest *cns_udp_create_dest(CnsCtx *ctx, char *addr, unsigned short port) {
+CnsUdpDest *cns_udp_create_dest(CnsCtx *ctx, const char *addr, unsigned short port) {
   if (ctx->udp_client.fd == 0)
     return NULL;
 
@@ -827,6 +885,59 @@ void cns_udp_send(CnsUdpDest *dest, unsigned char *data, unsigned long data_len)
 
 void cns_udp_destroy_dest(CnsUdpDest *dest) {
   free(dest);
+}
+
+CnsError cns_unix_connect(CnsCtx *ctx, const char *path, CnsUnixConnectInfo *info) {
+  Fd sock = socket(AF_UNIX, SOCK_STREAM, 0);
+  if (!is_correct_socket(sock))
+    return CnsErrorCouldNotCreateSocket;
+
+  make_non_blocking(sock);
+
+  struct sockaddr_un *address = malloc(sizeof(sa_family_t) + strlen(path) + 1);
+  address->sun_family = AF_UNIX;
+  strcpy(address->sun_path, path);
+
+  i32 result = connect(sock, (struct sockaddr *) address, sizeof(struct sockaddr_un));
+  if (!is_correct_connect_result(result)) {
+    close_socket(sock);
+    return CnsErrorCouldNotConnect;
+  }
+
+  CnsConnection connection = {
+    sock,
+    { .address_info_unix = address },
+    CnsProtoUnix,
+    {},
+    {},
+    NULL,
+    (u32) -1,
+    ctx->tcp_unix_clients.len,
+    NULL,
+  };
+  u32 path_len = strlen(path);
+  if (path_len > sizeof(connection.address))
+    path_len = sizeof(connection.address);
+  memcpy(connection.address, path, path_len);
+
+  Data data;
+  data.len = 0;
+  data.cap = DEFAULT_DATA_BUFFER_CAP;
+  data.items = malloc(data.cap);
+
+  TcpUnixClient client = {
+    sock,
+    info->receive_timeout,
+    false,
+    connection,
+    data,
+    info->connected_cb,
+    info->data_cb,
+    info->disconnected_cb,
+  };
+  DA_APPEND(ctx->tcp_unix_clients, client);
+
+  return CnsErrorOk;
 }
 
 CnsTimer *cns_start_timer(CnsCtx *ctx, unsigned long start_timeout_ms,

@@ -36,3 +36,13 @@ deps = cns
 src = examples/simple-udp-multicast-client.c
 cflags = $cflags
 deps = cns
+
+[build/examples/simple-unix-server]
+src = examples/simple-unix-server.c
+cflags = $cflags
+deps = cns
+
+[build/examples/simple-unix-client]
+src = examples/simple-unix-client.c
+cflags = $cflags
+deps = cns
