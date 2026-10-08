@@ -56,7 +56,7 @@ CnsResult data(CnsCtx *ctx, CnsConnection *connection, unsigned char *data, unsi
   (void) connection;
   (void) data;
 
-  printf("[INFO] Received "DATA_SIZE_FMT" bytes of data from %s:%u\n",
+  printf("[INFO] Received %lu bytes of data from %s:%u\n",
          data_len, cns_get_connection_address(connection),
          cns_get_connection_port(connection));
 

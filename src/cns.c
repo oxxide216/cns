@@ -1,6 +1,7 @@
 #include <stdlib.h>
 #ifdef _WIN32
 #include <ws2tcpip.h>
+#include <afunix.h>
 #else
 #include <unistd.h>
 #include <arpa/inet.h>
@@ -24,6 +25,7 @@
 typedef SOCKET Fd;
 typedef i32 Size;
 typedef char SockOpt;
+typedef u_short sa_family_t;
 #else
 typedef i32 Fd;
 typedef u32 Size;
