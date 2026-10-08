@@ -94,6 +94,7 @@ void        cns_udp_send(CnsUdpDest *dest, unsigned char *data, unsigned long da
 void        cns_udp_destroy_dest(CnsUdpDest *dest);
 // Unix
 CnsError cns_unix_connect(CnsCtx *ctx, const char *path, CnsUnixConnectInfo *info);
+void     cns_unix_send(CnsConnection *connection, unsigned char *data, unsigned long data_len);
 
 // Timers
 // repeat_timeout_ms == 0 means no repeating

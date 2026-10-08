@@ -948,6 +948,11 @@ CnsError cns_unix_connect(CnsCtx *ctx, const char *path, CnsUnixConnectInfo *inf
   return CnsErrorOk;
 }
 
+void cns_unix_send(CnsConnection *connection, unsigned char *data, unsigned long data_len) {
+  if (connection->proto != CnsProtoUDP)
+    send(connection->fd, (char *) data, data_len, MSG_DONTWAIT);
+}
+
 CnsTimer *cns_start_timer(CnsCtx *ctx, unsigned long start_timeout_ms,
                           unsigned long repeat_timeout_ms, CnsTimerCallback tick_cb) {
   LL_PREPEND(ctx->timers, ctx->timers_end, CnsTimer);
