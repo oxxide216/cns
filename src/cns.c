@@ -40,10 +40,7 @@ struct CnsUdpDest {
 
 struct CnsConnection {
   Fd                  fd;
-  union {
-    struct sockaddr_in  address_info;
-    struct sockaddr_un *address_info_unix;
-  };
+  struct sockaddr_in  address_info;
   CnsProto            proto;
   char                address[256];
   CnsUdpDest          udp_dest;
@@ -181,8 +178,6 @@ static void server_destroy(Server *server) {
   CnsConnection *connection = server->connections;
   while (connection) {
     close_socket(connection->fd);
-    if (connection->proto == CnsProtoUnix)
-      free(connection->address_info_unix);
     CnsConnection *next = connection->next;
     free(connection);
     connection = next;
@@ -203,8 +198,6 @@ static void server_destroy(Server *server) {
 
 static void tcp_unix_client_destroy(TcpUnixClient *client) {
   close_socket(client->fd);
-  if (client->connection.proto == CnsProtoUnix)
-    free(client->connection.address_info_unix);
 
   if (client->data.items)
     free(client->data.items);
@@ -245,6 +238,7 @@ static void main_loop_servers_accept_connections(CnsCtx *ctx) {
       inet_ntop(AF_INET, &address_info.sin_addr,
                 server->connections_end->address,
                 sizeof(server->connections_end->address));
+    server->connections_end->next = NULL;
 
     if (server->connected_cb) {
       if (server->connected_cb(ctx, server->connections_end) != CnsResultOk) {
@@ -776,7 +770,7 @@ CnsError cns_tcp_connect(CnsCtx *ctx, const char *addr, unsigned short port, Cns
 
   CnsConnection connection = {
     sock,
-    { .address_info = address },
+    address,
     CnsProtoTCP,
     {},
     {},
@@ -916,9 +910,11 @@ CnsError cns_unix_connect(CnsCtx *ctx, const char *path, CnsUnixConnectInfo *inf
     return CnsErrorCouldNotConnect;
   }
 
+  free(address);
+
   CnsConnection connection = {
     sock,
-    { .address_info_unix = address },
+    {},
     CnsProtoUnix,
     {},
     {},
