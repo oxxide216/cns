@@ -33,7 +33,7 @@ typedef i32 SockOpt;
 struct CnsUdpDest {
   Fd                 fd;
   struct sockaddr_in address_info;
-  char               address[INET_ADDRSTRLEN];
+  char               address[256];
 };
 
 struct CnsConnection {
@@ -43,7 +43,7 @@ struct CnsConnection {
     struct sockaddr_un *address_info_unix;
   };
   CnsProto            proto;
-  char                address[INET_ADDRSTRLEN];
+  char                address[256];
   CnsUdpDest          udp_dest;
   void               *user_data;
   u32                 owner_server_index;
@@ -234,13 +234,15 @@ static void main_loop_servers_accept_connections(CnsCtx *ctx) {
     LL_PREPEND(server->connections, server->connections_end, CnsConnection);
 
     server->connections_end->fd = client;
-    server->connections_end->address_info = address_info;
+    if (server->proto != CnsProtoUnix)
+      server->connections_end->address_info = address_info;
     server->connections_end->proto = server->proto;
     server->connections_end->owner_server_index = i;
     server->connections_end->owner_client_index = (u32) -1;
-    inet_ntop(AF_INET, &address_info.sin_addr,
-              server->connections_end->address,
-              sizeof(server->connections_end->address));
+    if (server->proto != CnsProtoUnix)
+      inet_ntop(AF_INET, &address_info.sin_addr,
+                server->connections_end->address,
+                sizeof(server->connections_end->address));
 
     if (server->connected_cb) {
       if (server->connected_cb(ctx, server->connections_end) != CnsResultOk) {
@@ -683,7 +685,10 @@ CnsError cns_unix_listen(CnsCtx *ctx, const char *path, CnsListenInfo *info) {
 #endif
   make_non_blocking(sock);
 
-  struct sockaddr_un *address = malloc(sizeof(sa_family_t) + strlen(path) + 1);
+  struct sockaddr_un *address =
+    malloc(sizeof(sa_family_t) +
+           offsetof(struct sockaddr_un, sun_path) +
+           strlen(path) + 1);
   address->sun_family = AF_UNIX;
   strcpy(address->sun_path, path);
 
@@ -691,6 +696,8 @@ CnsError cns_unix_listen(CnsCtx *ctx, const char *path, CnsListenInfo *info) {
     close_socket(sock);
     return CnsErrorCouldNotBind;
   }
+
+  free(address);
 
   if (listen(sock, 0) < 0) {
     close_socket(sock);
@@ -894,7 +901,10 @@ CnsError cns_unix_connect(CnsCtx *ctx, const char *path, CnsUnixConnectInfo *inf
 
   make_non_blocking(sock);
 
-  struct sockaddr_un *address = malloc(sizeof(sa_family_t) + strlen(path) + 1);
+  struct sockaddr_un *address =
+    malloc(sizeof(sa_family_t) +
+           offsetof(struct sockaddr_un, sun_path) +
+           strlen(path) + 1);
   address->sun_family = AF_UNIX;
   strcpy(address->sun_path, path);
 
@@ -915,10 +925,6 @@ CnsError cns_unix_connect(CnsCtx *ctx, const char *path, CnsUnixConnectInfo *inf
     ctx->tcp_unix_clients.len,
     NULL,
   };
-  u32 path_len = strlen(path);
-  if (path_len > sizeof(connection.address))
-    path_len = sizeof(connection.address);
-  memcpy(connection.address, path, path_len);
 
   Data data;
   data.len = 0;
@@ -987,7 +993,9 @@ void cns_set_connection_user_data(CnsConnection *connection, void *user_data) {
 }
 
 char *cns_get_connection_address(CnsConnection *connection) {
-  return connection->address;
+  if (connection->proto != CnsProtoUnix)
+    return connection->address;
+  return NULL;
 }
 
 unsigned short cns_get_connection_port(CnsConnection *connection) {

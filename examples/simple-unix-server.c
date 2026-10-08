@@ -26,15 +26,13 @@ CnsResult timer_tick(CnsCtx *ctx, CnsTimer *timer) {
   char data[] = "Hello!\n";
   cns_tcp_send(client_connections[client_index], (unsigned char *) data, sizeof(data) - 1);
 
-  printf("[INFO] Sent "DATA_SIZE_FMT" bytes of data to client %s\n",
-         sizeof(data) - 1,
-         cns_get_connection_address(client_connections[client_index]));
+  printf("[INFO] Sent "DATA_SIZE_FMT" bytes of data to client\n", sizeof(data) - 1);
 
   return CnsResultOk;
 }
 
 CnsResult connected(CnsCtx *ctx, CnsConnection *connection) {
-  printf("[INFO] New client %s connected\n", cns_get_connection_address(connection));
+  printf("[INFO] New client connected\n");
 
   if (clients_len >= CLIENTS_MAX) {
     fprintf(stderr, "[ERROR] Not enough room for clients, disconnecting\n");
@@ -56,15 +54,13 @@ CnsResult data(CnsCtx *ctx, CnsConnection *connection, unsigned char *data, unsi
   (void) connection;
   (void) data;
 
-  printf("[INFO] Received %lu bytes of data from %s:%u\n",
-         data_len, cns_get_connection_address(connection),
-         cns_get_connection_port(connection));
+  printf("[INFO] Received "DATA_SIZE_FMT" bytes of data\n", data_len);
 
   return CnsResultOk;
 }
 
 void disconnected(CnsCtx *ctx, CnsConnection *connection) {
-  printf("[INFO] Client %s disconnected\n", cns_get_connection_address(connection));
+  printf("[INFO] Client disconnected\n");
 
   u64 client_index = (u64) cns_get_connection_user_data(connection);
 
