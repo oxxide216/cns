@@ -271,6 +271,18 @@ static void tcp_unix_server_receive_data(CnsCtx *ctx, Server *server) {
   while (*connection && i < server->connection_poll_fds.len) {
     server->connection_poll_fds.items[i].events = POLLIN;
 
+    if (server->connection_poll_fds.items[i].revents & POLLHUP) {
+      if (server->disconnected_cb)
+        server->disconnected_cb(ctx, *connection);
+      CnsConnection *next = (*connection)->next;
+      free(*connection);
+      if (*connection == server->connections_end)
+        server->connections_end = next;
+      *connection = next;
+      DA_REMOVE_AT(server->connection_poll_fds, i);
+      continue;
+    }
+
     if (server->connection_poll_fds.items[i].revents & POLLIN) {
       i32 len = 0;
       while ((len = tcp_receive_data((*connection)->fd, data)) > 0) {
@@ -287,6 +299,8 @@ static void tcp_unix_server_receive_data(CnsCtx *ctx, Server *server) {
         data->len = 0;
         CnsConnection *next = (*connection)->next;
         free(*connection);
+        if (*connection == server->connections_end)
+          server->connections_end = next;
         *connection = next;
         DA_REMOVE_AT(server->connection_poll_fds, i);
         continue;
@@ -298,6 +312,8 @@ static void tcp_unix_server_receive_data(CnsCtx *ctx, Server *server) {
           close_socket((*connection)->fd);
           CnsConnection *next = (*connection)->next;
           free(*connection);
+          if (*connection == server->connections_end)
+            server->connections_end = next;
           *connection = next;
           DA_REMOVE_AT(server->connection_poll_fds, i);
           continue;
