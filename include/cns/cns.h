@@ -1,7 +1,7 @@
 #ifndef CNS_H
 #define CNS_H
 
-#include <stdio.h>
+#include <stdbool.h>
 
 typedef enum {
   CnsErrorOk = 0,
@@ -84,17 +84,17 @@ CnsError cns_unix_listen(CnsCtx *ctx, const char *path, CnsListenInfo *info);
 void     cns_close(CnsCtx *ctx, CnsConnection *connection);
 // TCP
 CnsError cns_tcp_connect(CnsCtx *ctx, const char *addr, unsigned short port, CnsTcpConnectInfo *info);
-void     cns_tcp_send(CnsConnection *connection, unsigned char *data, unsigned long data_len);
+bool     cns_tcp_send(CnsConnection *connection, unsigned char *data, unsigned long data_len);
 // UDP
 CnsError    cns_udp_init(CnsCtx *ctx, CnsUdpInitInfo *info);
 void        cns_udp_enable_broadcast_send(CnsCtx *ctx);
 void        cns_udp_enable_multicast_receive(CnsCtx *ctx, char *group);
 CnsUdpDest *cns_udp_create_dest(CnsCtx *ctx, const char *addr, unsigned short port);
-void        cns_udp_send(CnsUdpDest *dest, unsigned char *data, unsigned long data_len);
+bool        cns_udp_send(CnsUdpDest *dest, unsigned char *data, unsigned long data_len);
 void        cns_udp_destroy_dest(CnsUdpDest *dest);
 // Unix
 CnsError cns_unix_connect(CnsCtx *ctx, const char *path, CnsUnixConnectInfo *info);
-void     cns_unix_send(CnsConnection *connection, unsigned char *data, unsigned long data_len);
+bool     cns_unix_send(CnsConnection *connection, unsigned char *data, unsigned long data_len);
 
 // Timers
 // repeat_timeout_ms == 0 means no repeating

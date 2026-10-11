@@ -804,9 +804,10 @@ CnsError cns_tcp_connect(CnsCtx *ctx, const char *addr, unsigned short port, Cns
   return CnsErrorOk;
 }
 
-void cns_tcp_send(CnsConnection *connection, unsigned char *data, unsigned long data_len) {
+bool cns_tcp_send(CnsConnection *connection, unsigned char *data, unsigned long data_len) {
   if (connection->proto != CnsProtoUDP)
-    send(connection->fd, (char *) data, data_len, MSG_DONTWAIT);
+    return send(connection->fd, (char *) data, data_len, MSG_DONTWAIT) == (long) data_len;
+  return false;
 }
 
 CnsError cns_udp_init(CnsCtx *ctx, CnsUdpInitInfo *info) {
@@ -880,10 +881,10 @@ CnsUdpDest *cns_udp_create_dest(CnsCtx *ctx, const char *addr, unsigned short po
   return dest;
 }
 
-void cns_udp_send(CnsUdpDest *dest, unsigned char *data, unsigned long data_len) {
-  sendto(dest->fd, (char *) data, data_len, MSG_DONTWAIT,
-         (struct sockaddr *) &dest->address_info,
-         sizeof(dest->address_info));
+bool cns_udp_send(CnsUdpDest *dest, unsigned char *data, unsigned long data_len) {
+  return sendto(dest->fd, (char *) data, data_len, MSG_DONTWAIT,
+                (struct sockaddr *) &dest->address_info,
+                sizeof(dest->address_info)) == (long) data_len;
 }
 
 void cns_udp_destroy_dest(CnsUdpDest *dest) {
@@ -944,9 +945,10 @@ CnsError cns_unix_connect(CnsCtx *ctx, const char *path, CnsUnixConnectInfo *inf
   return CnsErrorOk;
 }
 
-void cns_unix_send(CnsConnection *connection, unsigned char *data, unsigned long data_len) {
+bool cns_unix_send(CnsConnection *connection, unsigned char *data, unsigned long data_len) {
   if (connection->proto != CnsProtoUDP)
-    send(connection->fd, (char *) data, data_len, MSG_DONTWAIT);
+    return send(connection->fd, (char *) data, data_len, MSG_DONTWAIT) == (long) data_len;
+  return false;
 }
 
 CnsTimer *cns_start_timer(CnsCtx *ctx, unsigned long start_timeout_ms,
