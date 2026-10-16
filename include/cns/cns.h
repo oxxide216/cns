@@ -106,7 +106,8 @@ CnsError cns_unix_listen(CnsCtx *ctx, const char *path, CnsListenInfo *info);
 // Common networking (TCP, UDP, Unix and TLS)
 void     cns_close(CnsCtx *ctx, CnsConnection *connection);
 // TCP
-CnsError cns_tcp_connect(CnsCtx *ctx, const char *addr, unsigned short port, CnsTcpConnectInfo *info);
+CnsError cns_tcp_connect(CnsCtx *ctx, const char *addr, unsigned short port,
+                         CnsTcpConnectInfo *info, CnsConnection **out);
 bool     cns_tcp_send(CnsConnection *connection, unsigned char *data, unsigned long data_len);
 // UDP
 CnsError    cns_udp_init(CnsCtx *ctx, CnsUdpInitInfo *info);
@@ -116,10 +117,13 @@ CnsUdpDest *cns_udp_create_dest(CnsCtx *ctx, const char *addr, unsigned short po
 bool        cns_udp_send(CnsUdpDest *dest, unsigned char *data, unsigned long data_len);
 void        cns_udp_destroy_dest(CnsUdpDest *dest);
 // Unix
-CnsError cns_unix_connect(CnsCtx *ctx, const char *path, CnsUnixConnectInfo *info);
+CnsError cns_unix_connect(CnsCtx *ctx, const char *path,
+                          CnsUnixConnectInfo *info,
+                          CnsConnection **out);
 bool     cns_unix_send(CnsConnection *connection, unsigned char *data, unsigned long data_len);
 // TLS
-CnsError cns_tls_connect(CnsCtx *ctx, const char *host_name, unsigned short port, CnsTlsConnectInfo *info);
+CnsError cns_tls_connect(CnsCtx *ctx, const char *host_name, unsigned short port,
+                         CnsTlsConnectInfo *info, CnsConnection **out);
 bool     cns_tls_send(CnsConnection *connection, unsigned char *data, unsigned long data_len);
 CnsError cns_tls_enable(CnsCtx *ctx, CnsConnection *connection, const char *host_name);
   // Timers

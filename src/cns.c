@@ -1070,7 +1070,8 @@ void cns_close(CnsCtx *ctx, CnsConnection *connection) {
   }
 }
 
-CnsError cns_tcp_connect(CnsCtx *ctx, const char *addr, unsigned short port, CnsTcpConnectInfo *info) {
+CnsError cns_tcp_connect(CnsCtx *ctx, const char *addr, unsigned short port,
+                         CnsTcpConnectInfo *info, CnsConnection **out) {
   Fd sock = socket(AF_INET, SOCK_STREAM, 0);
   if (!is_correct_socket(sock))
     return CnsErrorCouldNotCreateSocket;
@@ -1127,6 +1128,7 @@ CnsError cns_tcp_connect(CnsCtx *ctx, const char *addr, unsigned short port, Cns
   };
   DA_APPEND(ctx->tcp_unix_tls_clients, client);
 
+  *out = connection;
   return CnsErrorOk;
 }
 
@@ -1217,7 +1219,9 @@ void cns_udp_destroy_dest(CnsUdpDest *dest) {
   free(dest);
 }
 
-CnsError cns_unix_connect(CnsCtx *ctx, const char *path, CnsUnixConnectInfo *info) {
+CnsError cns_unix_connect(CnsCtx *ctx, const char *path,
+                          CnsUnixConnectInfo *info,
+                          CnsConnection **out) {
   Fd sock = socket(AF_UNIX, SOCK_STREAM, 0);
   if (!is_correct_socket(sock))
     return CnsErrorCouldNotCreateSocket;
@@ -1270,6 +1274,7 @@ CnsError cns_unix_connect(CnsCtx *ctx, const char *path, CnsUnixConnectInfo *inf
   };
   DA_APPEND(ctx->tcp_unix_tls_clients, client);
 
+  *out = connection;
   return CnsErrorOk;
 }
 
@@ -1279,7 +1284,8 @@ bool cns_unix_send(CnsConnection *connection, unsigned char *data, unsigned long
   return false;
 }
 
-CnsError cns_tls_connect(CnsCtx *ctx, const char *host_name, unsigned short port, CnsTlsConnectInfo *info) {
+CnsError cns_tls_connect(CnsCtx *ctx, const char *host_name, unsigned short port,
+                         CnsTlsConnectInfo *info, CnsConnection **out) {
   Fd sock = socket(AF_INET, SOCK_STREAM, 0);
   if (!is_correct_socket(sock))
     return CnsErrorCouldNotCreateSocket;
@@ -1351,6 +1357,7 @@ CnsError cns_tls_connect(CnsCtx *ctx, const char *host_name, unsigned short port
   };
   DA_APPEND(ctx->tcp_unix_tls_clients, client);
 
+  *out = connection;
   return CnsErrorOk;
 }
 
