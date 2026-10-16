@@ -349,16 +349,19 @@ static void main_loop_servers_accept_connections(CnsCtx *ctx) {
     server->connections_end->tls = tls;
     server->connections_end->next = NULL;
 
+    struct pollfd poll_fd = { server->connections_end->fd, POLLIN, 0 };
+    DA_APPEND(server->connection_poll_fds, poll_fd);
+
     if (server->connected_cb) {
       if (server->connected_cb(ctx, server->connections_end) != CnsResultOk) {
+        if (server->disconnected_cb)
+          server->disconnected_cb(ctx, server->connections_end);
         free(server->connections_end);
         server->connections = prev_connections;
         server->connections_end = prev_connections_end;
+        --server->connection_poll_fds.len;
       }
     }
-
-    struct pollfd poll_fd = { server->connections_end->fd, POLLIN, 0 };
-    DA_APPEND(server->connection_poll_fds, poll_fd);
   }
 }
 
@@ -461,7 +464,10 @@ static void tcp_unix_tls_server_receive_data(CnsCtx *ctx, Server *server, bool i
 
       Data *d = server->proto == CnsProtoTLS ? data_decoded : data;
       if (d->len > 0 && server->data_cb) {
+        u32 prev_poll_fds_len = server->connection_poll_fds.len;
         if (server->data_cb(ctx, *connection, d->items, d->len) != CnsResultOk) {
+          if (server->disconnected_cb)
+            server->disconnected_cb(ctx, *connection);
           data->len = 0;
           data_decoded->len = 0;
           close_socket((*connection)->fd);
@@ -472,6 +478,10 @@ static void tcp_unix_tls_server_receive_data(CnsCtx *ctx, Server *server, bool i
           free(*connection);
           *connection = next;
           DA_REMOVE_AT(server->connection_poll_fds, i);
+          continue;
+        } else if (server->connection_poll_fds.len < prev_poll_fds_len) {
+          data->len = 0;
+          data_decoded->len = 0;
           continue;
         }
       }
@@ -615,8 +625,12 @@ static void main_loop_clients_confirm_connections(CnsCtx *ctx) {
       if (error == 0) {
         if (client->connected_cb) {
           if (client->connected_cb(ctx, client->connection) != CnsResultOk) {
+            if (client->disconnected_cb)
+              client->disconnected_cb(ctx, client->connection);
             tcp_unix_tls_client_destroy(client);
             DA_REMOVE_AT(ctx->tcp_unix_tls_clients, i);
+            for (u32 j = i; j < ctx->tcp_unix_tls_clients.len; ++j)
+              --ctx->tcp_unix_tls_clients.items[j].connection->owner_client_index;
             --i;
           } else if (client == initial_client) {
             client->connected = true;
@@ -630,6 +644,8 @@ static void main_loop_clients_confirm_connections(CnsCtx *ctx) {
         if (client->disconnected_cb)
           client->disconnected_cb(ctx, client->connection);
         DA_REMOVE_AT(ctx->tcp_unix_tls_clients, i);
+        for (u32 j = i; j < ctx->tcp_unix_tls_clients.len; ++j)
+          --ctx->tcp_unix_tls_clients.items[j].connection->owner_client_index;
         --i;
       }
     }
@@ -689,6 +705,8 @@ static void main_loop_clients_receive_data(CnsCtx *ctx) {
         client->disconnected_cb(ctx, client->connection);
       tcp_unix_tls_client_destroy(client);
       DA_REMOVE_AT(ctx->tcp_unix_tls_clients, i);
+      for (u32 j = i; j < ctx->tcp_unix_tls_clients.len; ++j)
+        --ctx->tcp_unix_tls_clients.items[j].connection->owner_client_index;
       --i;
       --ctx->tcp_unix_tls_clients_connected;
       continue;
@@ -697,8 +715,12 @@ static void main_loop_clients_receive_data(CnsCtx *ctx) {
     Data *d = client->connection->proto == CnsProtoTLS ? data_decoded : data;
     if (d->len > 0 && client->data_cb) {
       if (client->data_cb(ctx, client->connection, d->items, d->len) != CnsResultOk) {
+        if (client->disconnected_cb)
+          client->disconnected_cb(ctx, client->connection);
         tcp_unix_tls_client_destroy(client);
         DA_REMOVE_AT(ctx->tcp_unix_tls_clients, i);
+        for (u32 j = i; j < ctx->tcp_unix_tls_clients.len; ++j)
+          --ctx->tcp_unix_tls_clients.items[j].connection->owner_client_index;
         --i;
         --ctx->tcp_unix_tls_clients_connected;
         continue;
@@ -813,6 +835,13 @@ void cns_destroy(CnsCtx *ctx) {
     free(ctx->tcp_unix_tls_clients.items);
 
   udp_client_destroy(&ctx->udp_client);
+
+  CnsTimer *timer = ctx->timers;
+  while (timer) {
+    CnsTimer *next = timer->next;
+    free(timer);
+    timer = next;
+  }
 
   free(ctx);
 }
@@ -985,6 +1014,8 @@ void cns_close(CnsCtx *ctx, CnsConnection *connection) {
     u32 i = 0;
     while (*_connection && i < server->connection_poll_fds.len) {
       if (*_connection == connection) {
+        if (server->disconnected_cb)
+          server->disconnected_cb(ctx, connection);
         if ((*_connection)->proto == CnsProtoTLS) {
           tls_close_notify((*_connection)->tls);
           send_pending((*_connection)->fd, (*_connection)->tls);
@@ -1006,6 +1037,8 @@ void cns_close(CnsCtx *ctx, CnsConnection *connection) {
     }
   } else if (connection->owner_client_index != (u32) -1) {
     u32 owner_client_index = connection->owner_client_index;
+    if (ctx->tcp_unix_tls_clients.items[owner_client_index].disconnected_cb)
+      ctx->tcp_unix_tls_clients.items[owner_client_index].disconnected_cb(ctx, connection);
     if (ctx->tcp_unix_tls_clients.items[owner_client_index].connected)
       --ctx->tcp_unix_tls_clients_connected;
     tcp_unix_tls_client_destroy(ctx->tcp_unix_tls_clients.items + owner_client_index);
