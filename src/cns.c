@@ -777,10 +777,13 @@ void main_loop_timers_update(CnsCtx *ctx) {
       }
     }
 
-    if (stopped)
-      *timer = (*timer)->next;
-    else
+    if (stopped) {
+      CnsTimer *next = (*timer)->next;
+      free(*timer);
+      *timer = next;
+    } else {
       timer = &(*timer)->next;
+    }
   }
 }
 
@@ -1462,6 +1465,7 @@ void cns_stop_timer(CnsCtx *ctx, CnsTimer *timer) {
   CnsTimer **_timer = &ctx->timers;
   while (*_timer) {
     if (*_timer == timer) {
+      free(timer);
       *_timer = (*_timer)->next;
       if (!ctx->timers)
         ctx->timers_end = NULL;
