@@ -1001,8 +1001,9 @@ void cns_close(CnsCtx *ctx, CnsConnection *connection) {
       ++i;
     }
   } else if (connection->owner_client_index != (u32) -1) {
+    u32 owner_client_index = connection->owner_client_index;
     tcp_unix_tls_client_destroy(ctx->tcp_unix_tls_clients.items + connection->owner_client_index);
-    DA_REMOVE_AT(ctx->tcp_unix_tls_clients, connection->owner_client_index);
+    DA_REMOVE_AT(ctx->tcp_unix_tls_clients, owner_client_index);
   }
 }
 
