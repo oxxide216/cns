@@ -1297,7 +1297,7 @@ CnsError cns_tls_connect(CnsCtx *ctx, const char *host_name, unsigned short port
 
   u8 buffer[512];
   while (true) {
-    i32 result = poll(&poll_fd, 1, info->receive_timeout * 10);
+    i32 result = poll(&poll_fd, 1, info->receive_timeout);
 
     if (result < 0) {
       close(sock);
@@ -1407,7 +1407,7 @@ CnsError cns_tls_enable(CnsCtx *ctx, CnsConnection *connection, const char *host
 
     u8 buffer[512];
     while (true) {
-      i32 result = poll(&poll_fd, 1, client->receive_timeout * 10);
+      i32 result = poll(&poll_fd, 1, client->receive_timeout);
 
       if (result < 0) {
         close(client->connection->fd);
