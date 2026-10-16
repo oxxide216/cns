@@ -1061,7 +1061,7 @@ CnsError cns_tcp_connect(CnsCtx *ctx, const char *addr, unsigned short port, Cns
   address.sin_family = AF_INET;
   address.sin_port = htons(port);
 
-  if (inet_pton(AF_INET, addr, &address.sin_addr) < 0) {
+  if (inet_pton(AF_INET, addr, &address.sin_addr) <= 0) {
     close_socket(sock);
     return CnsErrorInvalidAddress;
   }
@@ -1172,7 +1172,7 @@ CnsUdpDest *cns_udp_create_dest(CnsCtx *ctx, const char *addr, unsigned short po
   address_info.sin_family = AF_INET;
   address_info.sin_port = htons(port);
 
-  if (inet_pton(AF_INET, addr, &address_info.sin_addr) < 0)
+  if (inet_pton(AF_INET, addr, &address_info.sin_addr) <= 0)
     return NULL;
 
   CnsUdpDest *dest = malloc(sizeof(CnsUdpDest));
@@ -1265,13 +1265,17 @@ CnsError cns_tls_connect(CnsCtx *ctx, const char *host_name, unsigned short port
   make_non_blocking(sock);
 
   char addr[512];
-  cns_resolve(host_name, CnsProtoTLS, addr, sizeof(addr) - 1);
+  CnsError error = cns_resolve(host_name, CnsProtoTLS, addr, sizeof(addr) - 1);
+  if (error != CnsErrorOk) {
+    close_socket(sock);
+    return error;
+  }
 
   struct sockaddr_in address;
   address.sin_family = AF_INET;
   address.sin_port = htons(port);
 
-  if (inet_pton(AF_INET, addr, &address.sin_addr) < 0) {
+  if (inet_pton(AF_INET, addr, &address.sin_addr) <= 0) {
     close_socket(sock);
     return CnsErrorInvalidAddress;
   }
