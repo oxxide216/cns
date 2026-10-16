@@ -596,7 +596,8 @@ static void main_loop_servers_receive_data(CnsCtx *ctx) {
 
 static void main_loop_clients_confirm_connections(CnsCtx *ctx) {
   for (u32 i = 0; i < ctx->tcp_unix_tls_clients.len; ++i) {
-    TcpUnixTlsClient *client = ctx->tcp_unix_tls_clients.items + i;
+    TcpUnixTlsClient *initial_client = ctx->tcp_unix_tls_clients.items + i;
+    TcpUnixTlsClient *client = initial_client;
 
     if (client->connected)
       continue;
@@ -617,7 +618,7 @@ static void main_loop_clients_confirm_connections(CnsCtx *ctx) {
             tcp_unix_tls_client_destroy(client);
             DA_REMOVE_AT(ctx->tcp_unix_tls_clients, i);
             --i;
-          } else {
+          } else if (client == initial_client) {
             client->connected = true;
             ++ctx->tcp_unix_tls_clients_connected;
           }
@@ -637,7 +638,8 @@ static void main_loop_clients_confirm_connections(CnsCtx *ctx) {
 
 static void main_loop_clients_receive_data(CnsCtx *ctx) {
   for (u32 i = 0; i < ctx->tcp_unix_tls_clients.len; ++i) {
-    TcpUnixTlsClient *client = ctx->tcp_unix_tls_clients.items + i;
+    TcpUnixTlsClient *initial_client = ctx->tcp_unix_tls_clients.items + i;
+    TcpUnixTlsClient *client = initial_client;
     Data *data = &client->data;
     Data *data_decoded = &client->data_decoded;
 
@@ -700,6 +702,8 @@ static void main_loop_clients_receive_data(CnsCtx *ctx) {
         --i;
         --ctx->tcp_unix_tls_clients_connected;
         continue;
+      } else if (client != initial_client) {
+        --i;
       }
     }
 
@@ -1002,7 +1006,9 @@ void cns_close(CnsCtx *ctx, CnsConnection *connection) {
     }
   } else if (connection->owner_client_index != (u32) -1) {
     u32 owner_client_index = connection->owner_client_index;
-    tcp_unix_tls_client_destroy(ctx->tcp_unix_tls_clients.items + connection->owner_client_index);
+    if (ctx->tcp_unix_tls_clients.items[owner_client_index].connected)
+      --ctx->tcp_unix_tls_clients_connected;
+    tcp_unix_tls_client_destroy(ctx->tcp_unix_tls_clients.items + owner_client_index);
     DA_REMOVE_AT(ctx->tcp_unix_tls_clients, owner_client_index);
     for (u32 i = owner_client_index; i < ctx->tcp_unix_tls_clients.len; ++i)
       --ctx->tcp_unix_tls_clients.items[i].connection->owner_client_index;
