@@ -1,3 +1,6 @@
 [submodule "libs/shl"]
 	path = libs/shl
 	url = https://github.com/oxxide216/shl
+[submodule "libs/tlse"]
+	path = libs/tlse
+	url = https://github.com/eduardsui/tlse

@@ -1,4 +1,4 @@
-cflags = -Wall -Wextra -Iinclude -Ilibs
+cflags = -Wall -Wextra -Iinclude -Ilibs/tlse -Ilibs
 ldflags = -lws2_32 -lwinmm
 build_dir = build
 cc = x86_64-w64-mingw32-gcc
@@ -62,6 +62,13 @@ deps = cns
 [build/examples/simple-unix-client.exe]
 cc = $cc
 src = examples/simple-unix-client.c
+cflags = $cflags
+ldflags = $ldflags
+deps = cns
+
+[build/examples/simple-tls-client.exe]
+cc = $cc
+src = examples/simple-tls-client.c
 cflags = $cflags
 ldflags = $ldflags
 deps = cns

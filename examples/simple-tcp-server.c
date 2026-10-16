@@ -1,3 +1,4 @@
+#include <stdio.h>
 #include <string.h>
 
 #include "cns/cns.h"

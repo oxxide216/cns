@@ -1,3 +1,5 @@
+#include <stdio.h>
+
 #include "cns/cns.h"
 
 #define SERVER_PATH "/tmp/simple-unix-socket"

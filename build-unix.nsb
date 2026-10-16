@@ -1,4 +1,4 @@
-cflags = -Wall -Wextra -Iinclude -Ilibs
+cflags = -Wall -Wextra -Iinclude -Ilibs/tlse -Ilibs
 build_dir = build
 
 [cns]
@@ -44,5 +44,10 @@ deps = cns
 
 [build/examples/simple-unix-client]
 src = examples/simple-unix-client.c
+cflags = $cflags
+deps = cns
+
+[build/examples/simple-tls-client]
+src = examples/simple-tls-client.c
 cflags = $cflags
 deps = cns

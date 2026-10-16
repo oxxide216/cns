@@ -1,3 +1,5 @@
+#include <stdio.h>
+
 #include "cns/cns.h"
 
 #define MULTICAST_GROUP "239.255.42.99"

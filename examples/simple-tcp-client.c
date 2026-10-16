@@ -1,3 +1,5 @@
+#include <stdio.h>
+
 #include "cns/cns.h"
 
 #define SERVER_ADDRESS "127.0.0.1"

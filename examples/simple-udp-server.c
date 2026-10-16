@@ -1,3 +1,5 @@
+#include <stdio.h>
+
 #include "cns/cns.h"
 
 #define PORT 2160

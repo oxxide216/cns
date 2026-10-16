@@ -10,10 +10,32 @@
 #include <sys/time.h>
 #include <sys/un.h>
 #include <errno.h>
+#include <netdb.h>
 #endif
 
 #include "cns/cns.h"
 #include "shl/shl-defs.h"
+// TODO: also suppress these warnings for clang/msvc
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wcalloc-transposed-args"
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wunused-but-set-variable"
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wunused-parameter"
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wsign-compare"
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wunused-variable"
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wunused-function"
+#define TLS_AMALGAMATION
+#include "tlse.c"
+#pragma GCC diagnostic pop
+#pragma GCC diagnostic pop
+#pragma GCC diagnostic pop
+#pragma GCC diagnostic pop
+#pragma GCC diagnostic pop
+#pragma GCC diagnostic pop
 
 #define MAIN_LOOP_DELAY         1000
 #define DEFAULT_DATA_BUFFER_CAP 1024
@@ -44,6 +66,7 @@ struct CnsConnection {
   CnsProto            proto;
   char                address[256];
   CnsUdpDest          udp_dest;
+  struct TLSContext  *tls;
   void               *user_data;
   u32                 owner_server_index;
   u32                 owner_client_index;
@@ -72,26 +95,29 @@ typedef struct {
   CnsConnection             *connections_end;
   PollFds                    connection_poll_fds;
   Data                       data;
+  Data                       data_decoded; // TLS only
   CnsConnectedCallback       connected_cb;
   CnsConnectionDataCallback  data_cb;
   CnsDisconnectedCallback    disconnected_cb;
   const char                *unix_socket_path;
+  struct TLSContext         *tls;
 } Server;
 
 typedef Da(Server) Servers;
 
 typedef struct {
-  Fd                        fd;
-  unsigned int              receive_timeout;
-  bool                      connected;
-  CnsConnection             connection;
-  Data                      data;
-  CnsConnectedCallback      connected_cb;
-  CnsConnectionDataCallback data_cb;
-  CnsDisconnectedCallback   disconnected_cb;
-} TcpUnixClient;
+  Fd                         fd;
+  unsigned int               receive_timeout;
+  bool                       connected;
+  CnsConnection              connection;
+  Data                       data;
+  Data                       data_decoded; // TLS only
+  CnsConnectedCallback       connected_cb;
+  CnsConnectionDataCallback  data_cb;
+  CnsDisconnectedCallback    disconnected_cb;
+} TcpUnixTlsClient;
 
-typedef Da(TcpUnixClient) TcpUnixClients;
+typedef Da(TcpUnixTlsClient) TcpUnixTlsClients;
 
 typedef struct {
   Fd              fd;
@@ -101,14 +127,14 @@ typedef struct {
 } UdpClient;
 
 struct CnsCtx {
-  Servers         servers;
-  TcpUnixClients  tcp_unix_clients;
-  UdpClient       udp_client;
-  CnsTimer       *timers;
-  CnsTimer       *timers_end;
-  void           *user_data;
-  bool            stop;
-  u32             tcp_unix_clients_connected;
+  Servers            servers;
+  TcpUnixTlsClients  tcp_unix_tls_clients;
+  UdpClient          udp_client;
+  CnsTimer          *timers;
+  CnsTimer          *timers_end;
+  void              *user_data;
+  bool               stop;
+  u32                tcp_unix_tls_clients_connected;
 };
 
 static void close_socket(Fd socket) {
@@ -168,6 +194,8 @@ CnsCtx *cns_create(void) {
   WSAStartup(MAKEWORD(2,2), &wsa_data);
 #endif
 
+  tls_init();
+
   CnsCtx *ctx = malloc(sizeof(CnsCtx));
   memset(ctx, 0, sizeof(CnsCtx));
   ctx->stop = false;
@@ -178,6 +206,7 @@ static void server_destroy(Server *server) {
   CnsConnection *connection = server->connections;
   while (connection) {
     close_socket(connection->fd);
+    tls_destroy_context(connection->tls);
     CnsConnection *next = connection->next;
     free(connection);
     connection = next;
@@ -194,13 +223,48 @@ static void server_destroy(Server *server) {
     free(server->connection_poll_fds.items);
   if (server->data.items)
     free(server->data.items);
+  if (server->data_decoded.items)
+    free(server->data_decoded.items);
+
+  if (server->proto == CnsProtoTLS)
+    tls_destroy_context(server->tls);
 }
 
-static void tcp_unix_client_destroy(TcpUnixClient *client) {
+static void send_pending(Fd sock, struct TLSContext *tls) {
+  u32 buffer_cap = 0;
+  u32 buffer_index = 0;
+  const u8 *buffer = tls_get_write_buffer(tls, &buffer_cap);
+
+  while (buffer && buffer_cap > 0) {
+    i32 result = send(sock, (char *) buffer + buffer_index,
+                      buffer_cap - buffer_index, 0);
+    if (result > 0) {
+      buffer_index += result;
+    } else if (result < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
+      struct pollfd poll_fd = { sock, POLLOUT, 0 };
+      poll(&poll_fd, 1, 1500);
+    } else {
+      break;
+    }
+  }
+
+  if (buffer && buffer_index >= buffer_cap)
+    tls_buffer_clear(tls);
+}
+
+static void tcp_unix_tls_client_destroy(TcpUnixTlsClient *client) {
+  if (client->connection.proto == CnsProtoTLS) {
+    tls_close_notify(client->connection.tls);
+    send_pending(client->fd, client->connection.tls);
+  }
   close_socket(client->fd);
+  if (client->connection.proto == CnsProtoTLS)
+    tls_destroy_context(client->connection.tls);
 
   if (client->data.items)
     free(client->data.items);
+  if (client->data_decoded.items)
+    free(client->data_decoded.items);
 }
 
 static void udp_client_destroy(UdpClient *client) {
@@ -209,6 +273,14 @@ static void udp_client_destroy(UdpClient *client) {
 
   if (client->data.items)
     free(client->data.items);
+}
+
+// TODO: Maybe make it actually do something?
+static i32 verify_signature(struct TLSContext *ctx, struct TLSCertificate **cert_chain, i32 len) {
+  (void) ctx;
+  (void) cert_chain;
+  (void) len;
+  return no_error;
 }
 
 static void main_loop_servers_accept_connections(CnsCtx *ctx) {
@@ -224,6 +296,30 @@ static void main_loop_servers_accept_connections(CnsCtx *ctx) {
     if (!is_correct_socket(client))
       continue;
 
+    struct TLSContext *tls;
+    if (server->proto == CnsProtoTLS) {
+      tls = tls_accept(server->tls);
+
+      u8 buffer[512];
+      i32 buffer_len = 0;
+      while ((buffer_len = recv(client, buffer, sizeof(buffer), MSG_DONTWAIT)) > 0) {
+        if (tls_consume_stream(tls, buffer, buffer_len, verify_signature) < 0) {
+          close(client);
+          tls_destroy_context(tls);
+          tls = NULL;
+          break;
+        }
+
+        send_pending(client, tls);
+
+        if (tls_established(tls) == 1)
+          break;
+      }
+
+      if (!tls)
+        continue;
+    }
+
     CnsConnection *prev_connections = server->connections;
     CnsConnection *prev_connections_end = server->connections_end;
     LL_PREPEND(server->connections, server->connections_end, CnsConnection);
@@ -238,6 +334,7 @@ static void main_loop_servers_accept_connections(CnsCtx *ctx) {
       inet_ntop(AF_INET, &address_info.sin_addr,
                 server->connections_end->address,
                 sizeof(server->connections_end->address));
+    server->connections_end->tls = tls;
     server->connections_end->next = NULL;
 
     if (server->connected_cb) {
@@ -253,13 +350,31 @@ static void main_loop_servers_accept_connections(CnsCtx *ctx) {
   }
 }
 
-static i32 tcp_receive_data(Fd fd, Data *data) {
+static i32 tcp_unix_receive_data(Fd fd, Data *data) {
   return recv(fd, (char *) data->items + data->len,
               data->cap - data->len, MSG_DONTWAIT);
 }
 
-static void tcp_unix_server_receive_data(CnsCtx *ctx, Server *server) {
+static i32 tls_receive_data(Fd fd, struct TLSContext *tls, Data *data) {
+  i32 buffer_len = recv(fd, data->items + data->len, data->cap - data->len, MSG_DONTWAIT);
+  if (buffer_len <= 0)
+    return buffer_len;
+
+  tls_consume_stream(tls,
+                     data->items + data->len,
+                     buffer_len,
+                     verify_signature);
+
+  return buffer_len;
+}
+
+static i32 tls_decode_data(struct TLSContext *tls, Data *data) {
+  return tls_read(tls, data->items + data->len, data->cap - data->len);
+}
+
+static void tcp_unix_tls_server_receive_data(CnsCtx *ctx, Server *server, bool is_tls) {
   Data *data = &server->data;
+  Data *data_decoded = &server->data_decoded;
 
   if (poll(server->connection_poll_fds.items,
            server->connection_poll_fds.len,
@@ -286,19 +401,42 @@ static void tcp_unix_server_receive_data(CnsCtx *ctx, Server *server) {
 
     if (server->connection_poll_fds.items[i].revents & POLLIN) {
       i32 len = 0;
-      while ((len = tcp_receive_data((*connection)->fd, data)) > 0) {
-        if ((u32) len == data->cap - data->len) {
-          data->cap *= 2;
-          data->items = realloc(data->items, data->cap);
+      if (is_tls) {
+        while ((len = tls_receive_data((*connection)->fd, (*connection)->tls, data)) > 0) {
+          if ((u32) len == data->cap - data->len) {
+            data->cap *= 2;
+            data->items = realloc(data->items, data->cap);
+          }
+          data->len += len;
         }
-        data->len += len;
+
+        send_pending((*connection)->fd, (*connection)->tls);
+
+        i32 internal_len;
+        while ((internal_len = tls_decode_data((*connection)->tls, data_decoded)) > 0) {
+          if ((u32) internal_len == data_decoded->cap - data_decoded->len) {
+            data_decoded->cap *= 2;
+            data_decoded->items = realloc(data_decoded->items, data_decoded->cap);
+          }
+          data_decoded->len += internal_len;
+        }
+      } else {
+        while ((len = tcp_unix_receive_data((*connection)->fd, data)) > 0) {
+          if ((u32) len == data->cap - data->len) {
+            data->cap *= 2;
+            data->items = realloc(data->items, data->cap);
+          }
+          data->len += len;
+        }
       }
 
       if (len == 0) {
         if (server->disconnected_cb)
           server->disconnected_cb(ctx, *connection);
         data->len = 0;
+        data_decoded->len = 0;
         close_socket((*connection)->fd);
+        tls_destroy_context((*connection)->tls);
         CnsConnection *next = (*connection)->next;
         if (*connection == server->connections_end)
           server->connections_end = next;
@@ -308,10 +446,13 @@ static void tcp_unix_server_receive_data(CnsCtx *ctx, Server *server) {
         continue;
       }
 
-      if (data->len > 0 && server->data_cb) {
-        if (server->data_cb(ctx, *connection, data->items, data->len) != CnsResultOk) {
+      Data *d = server->proto == CnsProtoTLS ? data_decoded : data;
+      if (d->len > 0 && server->data_cb) {
+        if (server->data_cb(ctx, *connection, d->items, d->len) != CnsResultOk) {
           data->len = 0;
+          data_decoded->len = 0;
           close_socket((*connection)->fd);
+          tls_destroy_context((*connection)->tls);
           CnsConnection *next = (*connection)->next;
           if (*connection == server->connections_end)
             server->connections_end = next;
@@ -321,8 +462,8 @@ static void tcp_unix_server_receive_data(CnsCtx *ctx, Server *server) {
           continue;
         }
       }
-
       data->len = 0;
+      data_decoded->len = 0;
     }
 
     connection = &(*connection)->next;
@@ -426,8 +567,9 @@ static void main_loop_servers_receive_data(CnsCtx *ctx) {
 
     switch (server->proto) {
     case CnsProtoTCP:
-    case CnsProtoUnix: {
-      tcp_unix_server_receive_data(ctx, server);
+    case CnsProtoUnix:
+    case CnsProtoTLS: {
+      tcp_unix_tls_server_receive_data(ctx, server, server->proto == CnsProtoTLS);
     } break;
 
     case CnsProtoUDP: {
@@ -438,8 +580,8 @@ static void main_loop_servers_receive_data(CnsCtx *ctx) {
 }
 
 static void main_loop_clients_confirm_connections(CnsCtx *ctx) {
-  for (u32 i = 0; i < ctx->tcp_unix_clients.len; ++i) {
-    TcpUnixClient *client = ctx->tcp_unix_clients.items + i;
+  for (u32 i = 0; i < ctx->tcp_unix_tls_clients.len; ++i) {
+    TcpUnixTlsClient *client = ctx->tcp_unix_tls_clients.items + i;
 
     if (client->connected)
       continue;
@@ -457,21 +599,21 @@ static void main_loop_clients_confirm_connections(CnsCtx *ctx) {
       if (error == 0) {
         if (client->connected_cb) {
           if (client->connected_cb(ctx, &client->connection) != CnsResultOk) {
-            tcp_unix_client_destroy(client);
-            DA_REMOVE_AT(ctx->tcp_unix_clients, i);
+            tcp_unix_tls_client_destroy(client);
+            DA_REMOVE_AT(ctx->tcp_unix_tls_clients, i);
             --i;
           } else {
             client->connected = true;
-            ++ctx->tcp_unix_clients_connected;
+            ++ctx->tcp_unix_tls_clients_connected;
           }
         } else {
           client->connected = true;
-          ++ctx->tcp_unix_clients_connected;
+          ++ctx->tcp_unix_tls_clients_connected;
         }
       } else {
         if (client->disconnected_cb)
           client->disconnected_cb(ctx, &client->connection);
-        DA_REMOVE_AT(ctx->tcp_unix_clients, i);
+        DA_REMOVE_AT(ctx->tcp_unix_tls_clients, i);
         --i;
       }
     }
@@ -479,9 +621,10 @@ static void main_loop_clients_confirm_connections(CnsCtx *ctx) {
 }
 
 static void main_loop_clients_receive_data(CnsCtx *ctx) {
-  for (u32 i = 0; i < ctx->tcp_unix_clients.len; ++i) {
-    TcpUnixClient *client = ctx->tcp_unix_clients.items + i;
+  for (u32 i = 0; i < ctx->tcp_unix_tls_clients.len; ++i) {
+    TcpUnixTlsClient *client = ctx->tcp_unix_tls_clients.items + i;
     Data *data = &client->data;
+    Data *data_decoded = &client->data_decoded;
 
     if (!client->connected)
       continue;
@@ -495,35 +638,60 @@ static void main_loop_clients_receive_data(CnsCtx *ctx) {
       continue;
 
     i32 len;
-    while ((len = tcp_receive_data(client->fd, data)) > 0) {
-      if ((u32) len == data->cap - data->len) {
-        data->cap *= 2;
-        data->items = realloc(data->items, data->cap);
+    if (client->connection.proto == CnsProtoTLS) {
+      while ((len = tls_receive_data(client->fd, client->connection.tls, data)) > 0) {
+        if ((u32) len == data->cap - data->len) {
+          data->cap *= 2;
+          data->items = realloc(data->items, data->cap);
+        }
+        data->len += len;
       }
-      data->len += len;
+
+      i32 internal_len;
+      while ((internal_len = tls_decode_data(client->connection.tls, data_decoded)) > 0) {
+        if ((u32) internal_len == data_decoded->cap - data_decoded->len) {
+          data_decoded->cap *= 2;
+          data_decoded->items = realloc(data_decoded->items, data_decoded->cap);
+        }
+        data_decoded->len += internal_len;
+      }
+    } else {
+      while ((len = tcp_unix_receive_data(client->fd, data)) > 0) {
+        if ((u32) len == data->cap - data->len) {
+          data->cap *= 2;
+          data->items = realloc(data->items, data->cap);
+        }
+        data->len += len;
+      }
     }
 
     if (len == 0) {
       if (client->disconnected_cb)
         client->disconnected_cb(ctx, &client->connection);
-      tcp_unix_client_destroy(client);
-      DA_REMOVE_AT(ctx->tcp_unix_clients, i);
+      data->len = 0;
+      data_decoded->len = 0;
+      tcp_unix_tls_client_destroy(client);
+      DA_REMOVE_AT(ctx->tcp_unix_tls_clients, i);
       --i;
-      --ctx->tcp_unix_clients_connected;
+      --ctx->tcp_unix_tls_clients_connected;
       continue;
     }
 
-    if (data->len > 0 && client->data_cb) {
-      if (client->data_cb(ctx, &client->connection, data->items, data->len) != CnsResultOk) {
-        tcp_unix_client_destroy(client);
-        DA_REMOVE_AT(ctx->tcp_unix_clients, i);
+    Data *d = client->connection.proto == CnsProtoTLS ? data_decoded : data;
+    if (d->len > 0 && client->data_cb) {
+      if (client->data_cb(ctx, &client->connection, d->items, d->len) != CnsResultOk) {
+        data->len = 0;
+        data_decoded->len = 0;
+        tcp_unix_tls_client_destroy(client);
+        DA_REMOVE_AT(ctx->tcp_unix_tls_clients, i);
         --i;
-        --ctx->tcp_unix_clients_connected;
+        --ctx->tcp_unix_tls_clients_connected;
         continue;
       }
     }
 
     data->len = 0;
+    data_decoded->len = 0;
   }
 
   Data *data = &ctx->udp_client.data;
@@ -580,7 +748,7 @@ void main_loop_timers_update(CnsCtx *ctx) {
 int cns_step(CnsCtx *ctx, unsigned int delay_ms) {
   if (ctx->stop ||
       (ctx->servers.len == 0 &&
-       ctx->tcp_unix_clients.len == 0 &&
+       ctx->tcp_unix_tls_clients.len == 0 &&
        ctx->udp_client.fd == 0 &&
        !ctx->timers))
     return 0;
@@ -588,7 +756,7 @@ int cns_step(CnsCtx *ctx, unsigned int delay_ms) {
   main_loop_servers_accept_connections(ctx);
   main_loop_servers_receive_data(ctx);
 
-  if (ctx->tcp_unix_clients_connected < ctx->tcp_unix_clients.len || ctx->udp_client.fd != 0)
+  if (ctx->tcp_unix_tls_clients_connected < ctx->tcp_unix_tls_clients.len || ctx->udp_client.fd != 0)
     main_loop_clients_confirm_connections(ctx);
   main_loop_clients_receive_data(ctx);
 
@@ -599,7 +767,7 @@ int cns_step(CnsCtx *ctx, unsigned int delay_ms) {
 
   return !ctx->stop &&
          (ctx->servers.len > 0 ||
-          ctx->tcp_unix_clients.len > 0 ||
+          ctx->tcp_unix_tls_clients.len > 0 ||
           ctx->udp_client.fd != 0 ||
           ctx->timers);
 }
@@ -622,10 +790,10 @@ void cns_destroy(CnsCtx *ctx) {
   if (ctx->servers.items)
     free(ctx->servers.items);
 
-  for (u32 i = 0; i < ctx->tcp_unix_clients.len; ++i)
-    tcp_unix_client_destroy(ctx->tcp_unix_clients.items + i);
-  if (ctx->tcp_unix_clients.items)
-    free(ctx->tcp_unix_clients.items);
+  for (u32 i = 0; i < ctx->tcp_unix_tls_clients.len; ++i)
+    tcp_unix_tls_client_destroy(ctx->tcp_unix_tls_clients.items + i);
+  if (ctx->tcp_unix_tls_clients.items)
+    free(ctx->tcp_unix_tls_clients.items);
 
   udp_client_destroy(&ctx->udp_client);
 
@@ -637,9 +805,39 @@ static i32 proto_to_socket_type(CnsProto proto) {
   case CnsProtoTCP:  return SOCK_STREAM;
   case CnsProtoUDP:  return SOCK_DGRAM;
   case CnsProtoUnix: return SOCK_STREAM;
+  case CnsProtoTLS:  return SOCK_STREAM;
   }
 
   return 0;
+}
+
+CnsError cns_resolve(const char *host_name, CnsProto proto,
+                     char *out_addr, unsigned int out_addr_len) {
+  if (proto == CnsProtoUnix)
+    return CnsErrorProtoNotSupported;
+
+  struct addrinfo hints = {0};
+  hints.ai_family = AF_INET;
+  hints.ai_socktype = proto_to_socket_type(proto);
+
+  struct addrinfo *result;
+  if (getaddrinfo(host_name, NULL, &hints, &result) != 0)
+    return CnsErrorCouldNotResolve;
+
+  struct addrinfo *info = result;
+  while (info) {
+    struct in_addr *addr = &(((struct sockaddr_in *) info->ai_addr)->sin_addr);
+    if (inet_ntop(AF_INET, addr, out_addr, out_addr_len) != NULL) {
+      freeaddrinfo(result);
+      return CnsErrorOk;
+    }
+
+    info = info->ai_next;
+  }
+
+  freeaddrinfo(result);
+
+  return CnsErrorCouldNotResolve;
 }
 
 CnsError cns_listen(CnsCtx *ctx, unsigned short port, CnsListenInfo *info) {
@@ -662,10 +860,25 @@ CnsError cns_listen(CnsCtx *ctx, unsigned short port, CnsListenInfo *info) {
     return CnsErrorCouldNotBind;
   }
 
-  if (info->proto == CnsProtoTCP) {
+  struct TLSContext *tls = NULL;
+  if (info->proto == CnsProtoTCP || info->proto == CnsProtoTLS) {
     if (listen(sock, 0) < 0) {
       close_socket(sock);
       return CnsErrorCouldNotListen;
+    }
+  }
+
+  if (info->proto == CnsProtoTLS) {
+    tls = tls_create_context(1, TLS_V12);
+    if (tls_load_certificates(tls, info->cert.data, info->cert.len) < 0) {
+      close_socket(sock);
+      tls_destroy_context(tls);
+      return CnsErrorInvalidCertificate;
+    }
+    if (tls_load_private_key(tls, info->key.data, info->key.len) < 0) {
+      close_socket(sock);
+      tls_destroy_context(tls);
+      return CnsErrorInvalidKey;
     }
   }
 
@@ -674,15 +887,23 @@ CnsError cns_listen(CnsCtx *ctx, unsigned short port, CnsListenInfo *info) {
   data.cap = DEFAULT_DATA_BUFFER_CAP;
   data.items = malloc(data.cap);
 
+  Data data_decoded = {0};
+  if (info->proto == CnsProtoTLS) {
+    data_decoded.len = 0;
+    data_decoded.cap = DEFAULT_DATA_BUFFER_CAP;
+    data_decoded.items = malloc(data_decoded.cap);
+  }
+
   Server server = {
     sock,
     info->proto,
     info->receive_timeout,
-    NULL, NULL, {}, data,
+    NULL, NULL, {},
+    data, data_decoded,
     info->connected_cb,
     info->data_cb,
     info->disconnected_cb,
-    NULL,
+    NULL, tls,
   };
   DA_APPEND(ctx->servers, server);
 
@@ -727,11 +948,12 @@ CnsError cns_unix_listen(CnsCtx *ctx, const char *path, CnsListenInfo *info) {
     sock,
     CnsProtoUnix,
     info->receive_timeout,
-    NULL, NULL, {}, data,
+    NULL, NULL, {},
+    data, {},
     info->connected_cb,
     info->data_cb,
     info->disconnected_cb,
-    path,
+    path, NULL,
   };
   DA_APPEND(ctx->servers, server);
 
@@ -746,6 +968,10 @@ void cns_close(CnsCtx *ctx, CnsConnection *connection) {
     u32 i = 0;
     while (*_connection && i < server->connection_poll_fds.len) {
       if (*_connection == connection) {
+        if ((*_connection)->proto == CnsProtoTLS) {
+          tls_close_notify((*_connection)->tls);
+          send_pending((*_connection)->fd, (*_connection)->tls);
+        }
         close_socket((*_connection)->fd);
         CnsConnection *next = (*_connection)->next;
         free(*_connection);
@@ -759,8 +985,8 @@ void cns_close(CnsCtx *ctx, CnsConnection *connection) {
       ++i;
     }
   } else if (connection->owner_client_index != (u32) -1) {
-    tcp_unix_client_destroy(ctx->tcp_unix_clients.items + connection->owner_client_index);
-    DA_REMOVE_AT(ctx->tcp_unix_clients, connection->owner_client_index);
+    tcp_unix_tls_client_destroy(ctx->tcp_unix_tls_clients.items + connection->owner_client_index);
+    DA_REMOVE_AT(ctx->tcp_unix_tls_clients, connection->owner_client_index);
   }
 }
 
@@ -793,8 +1019,9 @@ CnsError cns_tcp_connect(CnsCtx *ctx, const char *addr, unsigned short port, Cns
     {},
     {},
     NULL,
+    NULL,
     (u32) -1,
-    ctx->tcp_unix_clients.len,
+    ctx->tcp_unix_tls_clients.len,
     NULL,
   };
   u32 addr_len = strlen(addr);
@@ -807,17 +1034,17 @@ CnsError cns_tcp_connect(CnsCtx *ctx, const char *addr, unsigned short port, Cns
   data.cap = DEFAULT_DATA_BUFFER_CAP;
   data.items = malloc(data.cap);
 
-  TcpUnixClient client = {
+  TcpUnixTlsClient client = {
     sock,
     info->receive_timeout,
     false,
     connection,
-    data,
+    data, {},
     info->connected_cb,
     info->data_cb,
     info->disconnected_cb,
   };
-  DA_APPEND(ctx->tcp_unix_clients, client);
+  DA_APPEND(ctx->tcp_unix_tls_clients, client);
 
   return CnsErrorOk;
 }
@@ -938,8 +1165,9 @@ CnsError cns_unix_connect(CnsCtx *ctx, const char *path, CnsUnixConnectInfo *inf
     {},
     {},
     NULL,
+    NULL,
     (u32) -1,
-    ctx->tcp_unix_clients.len,
+    ctx->tcp_unix_tls_clients.len,
     NULL,
   };
 
@@ -948,17 +1176,17 @@ CnsError cns_unix_connect(CnsCtx *ctx, const char *path, CnsUnixConnectInfo *inf
   data.cap = DEFAULT_DATA_BUFFER_CAP;
   data.items = malloc(data.cap);
 
-  TcpUnixClient client = {
+  TcpUnixTlsClient client = {
     sock,
     info->receive_timeout,
     false,
     connection,
-    data,
+    data, {},
     info->connected_cb,
     info->data_cb,
     info->disconnected_cb,
   };
-  DA_APPEND(ctx->tcp_unix_clients, client);
+  DA_APPEND(ctx->tcp_unix_tls_clients, client);
 
   return CnsErrorOk;
 }
@@ -966,6 +1194,129 @@ CnsError cns_unix_connect(CnsCtx *ctx, const char *path, CnsUnixConnectInfo *inf
 bool cns_unix_send(CnsConnection *connection, unsigned char *data, unsigned long data_len) {
   if (connection->proto != CnsProtoUDP)
     return send(connection->fd, (char *) data, data_len, MSG_DONTWAIT) == (long) data_len;
+  return false;
+}
+
+CnsError cns_tls_connect(CnsCtx *ctx, const char *host_name, unsigned short port, CnsTlsConnectInfo *info) {
+  Fd sock = socket(AF_INET, SOCK_STREAM, 0);
+  if (!is_correct_socket(sock))
+    return CnsErrorCouldNotCreateSocket;
+
+  make_non_blocking(sock);
+
+  char addr[512];
+  cns_resolve(host_name, CnsProtoTLS, addr, sizeof(addr) - 1);
+
+  struct sockaddr_in address;
+  address.sin_family = AF_INET;
+  address.sin_port = htons(port);
+
+  if (inet_pton(AF_INET, addr, &address.sin_addr) < 0) {
+    close_socket(sock);
+    return CnsErrorInvalidAddress;
+  }
+
+  i32 result = connect(sock, (struct sockaddr *) &address, sizeof(address));
+  if (!is_correct_connect_result(result)) {
+    close_socket(sock);
+    return CnsErrorCouldNotConnect;
+  }
+
+  struct TLSContext *tls = tls_create_context(0, TLS_V12);
+  tls_sni_set(tls, host_name);
+  tls_client_connect(tls);
+  send_pending(sock, tls);
+
+  struct pollfd poll_fd = {0};
+  poll_fd.fd = sock;
+  poll_fd.events = POLLIN;
+
+  u8 buffer[512];
+  while (true) {
+    i32 result = poll(&poll_fd, 1, info->receive_timeout * 10);
+
+    if (result < 0) {
+      close(sock);
+      tls_destroy_context(tls);
+      return CnsErrorCouldNotPerformHandshake;
+    }
+
+    if (poll_fd.revents == 0) {
+      if (tls_established(tls) != 1) {
+        close(sock);
+        tls_destroy_context(tls);
+        return CnsErrorCouldNotPerformHandshake;
+      }
+      break;
+    }
+
+    i32 len = recv(sock, buffer, sizeof(buffer), 0);
+    if (len <= 0) {
+      close(sock);
+      tls_destroy_context(tls);
+      return CnsErrorCouldNotPerformHandshake;
+    }
+
+    if (tls_consume_stream(tls, buffer, len, verify_signature) < 0) {
+      close(sock);
+      tls_destroy_context(tls);
+      return CnsErrorCouldNotPerformHandshake;
+    }
+
+    send_pending(sock, tls);
+
+    if (tls_established(tls) == 1)
+      break;
+  }
+
+  CnsConnection connection = {
+    sock,
+    {},
+    CnsProtoTLS,
+    {},
+    {},
+    tls,
+    NULL,
+    (u32) -1,
+    ctx->tcp_unix_tls_clients.len,
+    NULL,
+  };
+  u32 addr_len = strlen(addr);
+  if (addr_len > sizeof(connection.address))
+    addr_len = sizeof(connection.address);
+  memcpy(connection.address, addr, addr_len);
+
+  Data data;
+  data.len = 0;
+  data.cap = DEFAULT_DATA_BUFFER_CAP;
+  data.items = malloc(data.cap);
+
+  Data data_decoded;
+  data_decoded.len = 0;
+  data_decoded.cap = DEFAULT_DATA_BUFFER_CAP;
+  data_decoded.items = malloc(data_decoded.cap);
+
+  TcpUnixTlsClient client = {
+    sock,
+    info->receive_timeout,
+    false,
+    connection,
+    data, data_decoded,
+    info->connected_cb,
+    info->data_cb,
+    info->disconnected_cb,
+  };
+  DA_APPEND(ctx->tcp_unix_tls_clients, client);
+
+  return CnsErrorOk;
+}
+
+bool cns_tls_send(CnsConnection *connection, unsigned char *data, unsigned long data_len) {
+  if (connection->proto == CnsProtoTLS) {
+    bool result = tls_write(connection->tls, data, data_len) == (long) data_len;
+    send_pending(connection->fd, connection->tls);
+    return result;
+  }
   return false;
 }
 
@@ -1049,12 +1400,17 @@ unsigned short cns_udp_get_dest_port(CnsUdpDest *dest) {
 
 char *cns_get_error_str(CnsError error) {
   switch (error) {
-  case CnsErrorOk:                   return "ok";
-  case CnsErrorCouldNotCreateSocket: return "could not create socket";
-  case CnsErrorCouldNotBind:         return "could not bind";
-  case CnsErrorCouldNotListen:       return "could not listen";
-  case CnsErrorInvalidAddress:       return "invalid address";
-  case CnsErrorCouldNotConnect:      return "could not connect";
+  case CnsErrorOk:                       return "ok";
+  case CnsErrorCouldNotCreateSocket:     return "could not create socket";
+  case CnsErrorCouldNotBind:             return "could not bind";
+  case CnsErrorCouldNotListen:           return "could not listen";
+  case CnsErrorInvalidAddress:           return "invalid address";
+  case CnsErrorCouldNotConnect:          return "could not connect";
+  case CnsErrorProtoNotSupported:        return "protocol not supported";
+  case CnsErrorCouldNotResolve:          return "could not resolve";
+  case CnsErrorCouldNotPerformHandshake: return "could not perform handshake";
+  case CnsErrorInvalidCertificate:       return "invalid certificate";
+  case CnsErrorInvalidKey:               return "invalid key";
   }
 
   return NULL;
