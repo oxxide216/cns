@@ -302,7 +302,8 @@ static void main_loop_servers_accept_connections(CnsCtx *ctx) {
 
       u8 buffer[512];
       i32 buffer_len = 0;
-      while ((buffer_len = recv(client, buffer, sizeof(buffer), MSG_DONTWAIT)) > 0) {
+      while (tls_established(tls) != 1) {
+        buffer_len = recv(client, buffer, sizeof(buffer), MSG_DONTWAIT);
         if (tls_consume_stream(tls, buffer, buffer_len, verify_signature) < 0) {
           close(client);
           tls_destroy_context(tls);
@@ -311,9 +312,6 @@ static void main_loop_servers_accept_connections(CnsCtx *ctx) {
         }
 
         send_pending(client, tls);
-
-        if (tls_established(tls) == 1)
-          break;
       }
 
       if (!tls)
