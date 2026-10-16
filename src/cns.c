@@ -390,6 +390,7 @@ static void tcp_unix_tls_server_receive_data(CnsCtx *ctx, Server *server, bool i
       if (server->disconnected_cb)
         server->disconnected_cb(ctx, *connection);
       close_socket((*connection)->fd);
+      tls_destroy_context((*connection)->tls);
       CnsConnection *next = (*connection)->next;
       if (*connection == server->connections_end)
         server->connections_end = next;
@@ -466,8 +467,10 @@ static void tcp_unix_tls_server_receive_data(CnsCtx *ctx, Server *server, bool i
       data_decoded->len = 0;
     }
 
-    connection = &(*connection)->next;
-    ++i;
+    if (*connection) {
+      connection = &(*connection)->next;
+      ++i;
+    }
   }
 }
 
@@ -973,6 +976,7 @@ void cns_close(CnsCtx *ctx, CnsConnection *connection) {
           send_pending((*_connection)->fd, (*_connection)->tls);
         }
         close_socket((*_connection)->fd);
+        tls_destroy_context((*_connection)->tls);
         CnsConnection *next = (*_connection)->next;
         free(*_connection);
         *_connection = next;
