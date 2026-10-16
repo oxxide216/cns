@@ -11,6 +11,7 @@
 #include <sys/un.h>
 #include <errno.h>
 #include <netdb.h>
+#include <signal.h>
 #endif
 
 #include "cns/cns.h"
@@ -191,6 +192,8 @@ CnsCtx *cns_create(void) {
 #ifdef _WIN32
   WSADATA wsa_data;
   WSAStartup(MAKEWORD(2,2), &wsa_data);
+#else
+  signal(SIGPIPE, SIG_IGN);
 #endif
 
   tls_init();
