@@ -130,7 +130,6 @@ struct CnsCtx {
   TcpUnixTlsClients  tcp_unix_tls_clients;
   UdpClient          udp_client;
   CnsTimer          *timers;
-  CnsTimer          *timers_end;
   void              *user_data;
   bool               stop;
   u32                tcp_unix_tls_clients_connected;
@@ -1447,8 +1446,8 @@ CnsError cns_tls_enable(CnsCtx *ctx, CnsConnection *connection, const char *host
 
 CnsTimer *cns_start_timer(CnsCtx *ctx, unsigned long start_timeout_ms,
                           unsigned long repeat_timeout_ms, CnsTimerCallback tick_cb) {
-  LL_PREPEND(ctx->timers, ctx->timers_end, CnsTimer);
-  *ctx->timers_end = (CnsTimer) {
+  LL_APPEND(ctx->timers, CnsTimer);
+  *ctx->timers = (CnsTimer) {
     get_current_time_ms(),
     0,
     start_timeout_ms,
@@ -1458,7 +1457,7 @@ CnsTimer *cns_start_timer(CnsCtx *ctx, unsigned long start_timeout_ms,
     NULL,
   };
 
-  return ctx->timers_end;
+  return ctx->timers;
 }
 
 void cns_stop_timer(CnsCtx *ctx, CnsTimer *timer) {
@@ -1468,8 +1467,6 @@ void cns_stop_timer(CnsCtx *ctx, CnsTimer *timer) {
       CnsTimer *next = (*_timer)->next;
       free(*_timer);
       *_timer = next;
-      if (!ctx->timers)
-        ctx->timers_end = NULL;
       return;
     }
 
