@@ -1004,6 +1004,8 @@ void cns_close(CnsCtx *ctx, CnsConnection *connection) {
     u32 owner_client_index = connection->owner_client_index;
     tcp_unix_tls_client_destroy(ctx->tcp_unix_tls_clients.items + connection->owner_client_index);
     DA_REMOVE_AT(ctx->tcp_unix_tls_clients, owner_client_index);
+    for (u32 i = owner_client_index; i < ctx->tcp_unix_tls_clients.len; ++i)
+      --ctx->tcp_unix_tls_clients.items[i].connection->owner_client_index;
   }
 }
 
