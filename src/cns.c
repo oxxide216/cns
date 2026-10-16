@@ -106,7 +106,6 @@ typedef struct {
 typedef Da(Server) Servers;
 
 typedef struct {
-  Fd                         fd;
   unsigned int               receive_timeout;
   bool                       connected;
   CnsConnection             *connection;
@@ -255,9 +254,9 @@ static void send_pending(Fd sock, struct TLSContext *tls) {
 static void tcp_unix_tls_client_destroy(TcpUnixTlsClient *client) {
   if (client->connection->proto == CnsProtoTLS) {
     tls_close_notify(client->connection->tls);
-    send_pending(client->fd, client->connection->tls);
+    send_pending(client->connection->fd, client->connection->tls);
   }
-  close_socket(client->fd);
+  close_socket(client->connection->fd);
   if (client->connection->proto == CnsProtoTLS)
     tls_destroy_context(client->connection->tls);
   free(client->connection);
@@ -602,7 +601,7 @@ static void main_loop_clients_confirm_connections(CnsCtx *ctx) {
     if (client->connected)
       continue;
 
-    struct pollfd poll_fd = { client->fd, POLLOUT, 0 };
+    struct pollfd poll_fd = { client->connection->fd, POLLOUT, 0 };
 
     if (poll(&poll_fd, 1, client->receive_timeout) <= 0)
       continue;
@@ -610,7 +609,7 @@ static void main_loop_clients_confirm_connections(CnsCtx *ctx) {
     if (poll_fd.revents & POLLOUT) {
       SockOpt error;
       Size error_len = sizeof(error);
-      getsockopt(client->fd, SOL_SOCKET, SO_ERROR, &error, &error_len);
+      getsockopt(client->connection->fd, SOL_SOCKET, SO_ERROR, &error, &error_len);
 
       if (error == 0) {
         if (client->connected_cb) {
@@ -645,7 +644,7 @@ static void main_loop_clients_receive_data(CnsCtx *ctx) {
     if (!client->connected)
       continue;
 
-    struct pollfd poll_fd = { client->fd, POLLIN, 0 };
+    struct pollfd poll_fd = { client->connection->fd, POLLIN, 0 };
 
     if (poll(&poll_fd, 1, client->receive_timeout) <= 0)
       continue;
@@ -655,7 +654,9 @@ static void main_loop_clients_receive_data(CnsCtx *ctx) {
 
     i32 len;
     if (client->connection->proto == CnsProtoTLS) {
-      while ((len = tls_receive_data(client->fd, client->connection->tls, data)) > 0) {
+      while ((len = tls_receive_data(client->connection->fd,
+                                     client->connection->tls,
+                                     data)) > 0) {
         if ((u32) len == data->cap - data->len) {
           data->cap *= 2;
           data->items = realloc(data->items, data->cap);
@@ -672,7 +673,7 @@ static void main_loop_clients_receive_data(CnsCtx *ctx) {
         data_decoded->len += internal_len;
       }
     } else {
-      while ((len = tcp_unix_receive_data(client->fd, data)) > 0) {
+      while ((len = tcp_unix_receive_data(client->connection->fd, data)) > 0) {
         if ((u32) len == data->cap - data->len) {
           data->cap *= 2;
           data->items = realloc(data->items, data->cap);
@@ -1051,7 +1052,6 @@ CnsError cns_tcp_connect(CnsCtx *ctx, const char *addr, unsigned short port, Cns
   data.items = malloc(data.cap);
 
   TcpUnixTlsClient client = {
-    sock,
     info->receive_timeout,
     false,
     connection,
@@ -1194,7 +1194,6 @@ CnsError cns_unix_connect(CnsCtx *ctx, const char *path, CnsUnixConnectInfo *inf
   data.items = malloc(data.cap);
 
   TcpUnixTlsClient client = {
-    sock,
     info->receive_timeout,
     false,
     connection,
@@ -1315,7 +1314,6 @@ CnsError cns_tls_connect(CnsCtx *ctx, const char *host_name, unsigned short port
   data_decoded.items = malloc(data_decoded.cap);
 
   TcpUnixTlsClient client = {
-    sock,
     info->receive_timeout,
     false,
     connection,
