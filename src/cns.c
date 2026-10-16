@@ -1466,7 +1466,7 @@ void cns_stop_timer(CnsCtx *ctx, CnsTimer *timer) {
   while (*_timer) {
     if (*_timer == timer) {
       CnsTimer *next = (*_timer)->next;
-      free(timer);
+      free(*_timer);
       *_timer = next;
       if (!ctx->timers)
         ctx->timers_end = NULL;
