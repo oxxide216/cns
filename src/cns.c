@@ -108,6 +108,7 @@ typedef Da(Server) Servers;
 typedef struct {
   unsigned int               receive_timeout;
   bool                       connected;
+  bool                       started_handshake; // TLS only
   CnsConnection             *connection;
   Data                       data;
   Data                       data_decoded; // TLS only
@@ -374,10 +375,12 @@ static i32 tls_receive_data(Fd fd, struct TLSContext *tls, Data *data) {
   if (buffer_len <= 0)
     return buffer_len;
 
-  tls_consume_stream(tls,
-                     data->items + data->len,
-                     buffer_len,
-                     verify_signature);
+  i32 tls_result = tls_consume_stream(tls,
+                                      data->items + data->len,
+                                      buffer_len,
+                                      verify_signature);
+  if (tls_result < 0)
+    return -1;
 
   return buffer_len;
 }
@@ -445,7 +448,7 @@ static void tcp_unix_tls_server_receive_data(CnsCtx *ctx, Server *server, bool i
         }
       }
 
-      if (len == 0) {
+      if (len == 0 || (len < 0 && errno != EAGAIN && errno != EINPROGRESS)) {
         if (server->disconnected_cb)
           server->disconnected_cb(ctx, *connection);
         data->len = 0;
@@ -622,6 +625,21 @@ static void main_loop_clients_confirm_connections(CnsCtx *ctx) {
       getsockopt(client->connection->fd, SOL_SOCKET, SO_ERROR, &error, &error_len);
 
       if (error == 0) {
+        if (client->connection->proto == CnsProtoTLS) {
+          if (!client->started_handshake) {
+            tls_client_connect(client->connection->tls);
+            send_pending(client->connection->fd, client->connection->tls);
+            client->started_handshake = true;
+          }
+          tls_receive_data(client->connection->fd,
+                           client->connection->tls,
+                           &client->data);
+          send_pending(client->connection->fd, client->connection->tls);
+
+          if (tls_established(client->connection->tls) != 1)
+            continue;
+        }
+
         if (client->connected_cb) {
           if (client->connected_cb(ctx, client->connection) != CnsResultOk) {
             if (client->disconnected_cb)
@@ -681,6 +699,8 @@ static void main_loop_clients_receive_data(CnsCtx *ctx) {
         data->len += len;
       }
 
+      send_pending(client->connection->fd, client->connection->tls);
+
       i32 internal_len;
       while ((internal_len = tls_decode_data(client->connection->tls, data_decoded)) > 0) {
         if ((u32) internal_len == data_decoded->cap - data_decoded->len) {
@@ -699,7 +719,7 @@ static void main_loop_clients_receive_data(CnsCtx *ctx) {
       }
     }
 
-    if (len == 0) {
+    if (len == 0 || (len < 0 && errno != EAGAIN && errno != EINPROGRESS)) {
       if (client->disconnected_cb)
         client->disconnected_cb(ctx, client->connection);
       tcp_unix_tls_client_destroy(client);
@@ -1098,6 +1118,7 @@ CnsError cns_tcp_connect(CnsCtx *ctx, const char *addr, unsigned short port, Cns
   TcpUnixTlsClient client = {
     info->receive_timeout,
     false,
+    false,
     connection,
     data, {},
     info->connected_cb,
@@ -1240,6 +1261,7 @@ CnsError cns_unix_connect(CnsCtx *ctx, const char *path, CnsUnixConnectInfo *inf
   TcpUnixTlsClient client = {
     info->receive_timeout,
     false,
+    false,
     connection,
     data, {},
     info->connected_cb,
@@ -1288,50 +1310,6 @@ CnsError cns_tls_connect(CnsCtx *ctx, const char *host_name, unsigned short port
 
   struct TLSContext *tls = tls_create_context(0, TLS_V12);
   tls_sni_set(tls, host_name);
-  tls_client_connect(tls);
-  send_pending(sock, tls);
-
-  struct pollfd poll_fd = {0};
-  poll_fd.fd = sock;
-  poll_fd.events = POLLIN;
-
-  u8 buffer[512];
-  while (true) {
-    i32 result = poll(&poll_fd, 1, info->receive_timeout);
-
-    if (result < 0) {
-      close(sock);
-      tls_destroy_context(tls);
-      return CnsErrorCouldNotPerformHandshake;
-    }
-
-    if (poll_fd.revents == 0) {
-      if (tls_established(tls) != 1) {
-        close(sock);
-        tls_destroy_context(tls);
-        return CnsErrorCouldNotPerformHandshake;
-      }
-      break;
-    }
-
-    i32 len = recv(sock, buffer, sizeof(buffer), 0);
-    if (len <= 0) {
-      close(sock);
-      tls_destroy_context(tls);
-      return CnsErrorCouldNotPerformHandshake;
-    }
-
-    if (tls_consume_stream(tls, buffer, len, verify_signature) < 0) {
-      close(sock);
-      tls_destroy_context(tls);
-      return CnsErrorCouldNotPerformHandshake;
-    }
-
-    send_pending(sock, tls);
-
-    if (tls_established(tls) == 1)
-      break;
-  }
 
   CnsConnection *connection = malloc(sizeof(*connection));
   *connection = (CnsConnection) {
@@ -1363,6 +1341,7 @@ CnsError cns_tls_connect(CnsCtx *ctx, const char *host_name, unsigned short port
 
   TcpUnixTlsClient client = {
     info->receive_timeout,
+    false,
     false,
     connection,
     data, data_decoded,
