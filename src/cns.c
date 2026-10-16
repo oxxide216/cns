@@ -978,6 +978,8 @@ void cns_close(CnsCtx *ctx, CnsConnection *connection) {
         close_socket((*_connection)->fd);
         tls_destroy_context((*_connection)->tls);
         CnsConnection *next = (*_connection)->next;
+        if (*_connection == server->connections_end)
+          server->connections_end = next;
         free(*_connection);
         *_connection = next;
         DA_REMOVE_AT(server->connection_poll_fds, i);
