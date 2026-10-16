@@ -15,6 +15,7 @@ typedef enum {
   CnsErrorCouldNotPerformHandshake,
   CnsErrorInvalidCertificate,
   CnsErrorInvalidKey,
+  CnsErrorServerShouldBeTLSFromTheBeginning,
 } CnsError;
 
 typedef enum {
@@ -120,7 +121,8 @@ bool     cns_unix_send(CnsConnection *connection, unsigned char *data, unsigned 
 // TLS
 CnsError cns_tls_connect(CnsCtx *ctx, const char *host_name, unsigned short port, CnsTlsConnectInfo *info);
 bool     cns_tls_send(CnsConnection *connection, unsigned char *data, unsigned long data_len);
-// Timers
+CnsError cns_tls_enable(CnsCtx *ctx, CnsConnection *connection, const char *host_name);
+  // Timers
 // repeat_timeout_ms == 0 means no repeating
 CnsTimer *cns_start_timer(CnsCtx *ctx, unsigned long start_timeout_ms,
                           unsigned long repeat_timeout_ms, CnsTimerCallback tick_cb);

@@ -109,7 +109,7 @@ typedef struct {
   Fd                         fd;
   unsigned int               receive_timeout;
   bool                       connected;
-  CnsConnection              connection;
+  CnsConnection             *connection;
   Data                       data;
   Data                       data_decoded; // TLS only
   CnsConnectedCallback       connected_cb;
@@ -253,13 +253,14 @@ static void send_pending(Fd sock, struct TLSContext *tls) {
 }
 
 static void tcp_unix_tls_client_destroy(TcpUnixTlsClient *client) {
-  if (client->connection.proto == CnsProtoTLS) {
-    tls_close_notify(client->connection.tls);
-    send_pending(client->fd, client->connection.tls);
+  if (client->connection->proto == CnsProtoTLS) {
+    tls_close_notify(client->connection->tls);
+    send_pending(client->fd, client->connection->tls);
   }
   close_socket(client->fd);
-  if (client->connection.proto == CnsProtoTLS)
-    tls_destroy_context(client->connection.tls);
+  if (client->connection->proto == CnsProtoTLS)
+    tls_destroy_context(client->connection->tls);
+  free(client->connection);
 
   if (client->data.items)
     free(client->data.items);
@@ -613,7 +614,7 @@ static void main_loop_clients_confirm_connections(CnsCtx *ctx) {
 
       if (error == 0) {
         if (client->connected_cb) {
-          if (client->connected_cb(ctx, &client->connection) != CnsResultOk) {
+          if (client->connected_cb(ctx, client->connection) != CnsResultOk) {
             tcp_unix_tls_client_destroy(client);
             DA_REMOVE_AT(ctx->tcp_unix_tls_clients, i);
             --i;
@@ -627,7 +628,7 @@ static void main_loop_clients_confirm_connections(CnsCtx *ctx) {
         }
       } else {
         if (client->disconnected_cb)
-          client->disconnected_cb(ctx, &client->connection);
+          client->disconnected_cb(ctx, client->connection);
         DA_REMOVE_AT(ctx->tcp_unix_tls_clients, i);
         --i;
       }
@@ -653,8 +654,8 @@ static void main_loop_clients_receive_data(CnsCtx *ctx) {
       continue;
 
     i32 len;
-    if (client->connection.proto == CnsProtoTLS) {
-      while ((len = tls_receive_data(client->fd, client->connection.tls, data)) > 0) {
+    if (client->connection->proto == CnsProtoTLS) {
+      while ((len = tls_receive_data(client->fd, client->connection->tls, data)) > 0) {
         if ((u32) len == data->cap - data->len) {
           data->cap *= 2;
           data->items = realloc(data->items, data->cap);
@@ -663,7 +664,7 @@ static void main_loop_clients_receive_data(CnsCtx *ctx) {
       }
 
       i32 internal_len;
-      while ((internal_len = tls_decode_data(client->connection.tls, data_decoded)) > 0) {
+      while ((internal_len = tls_decode_data(client->connection->tls, data_decoded)) > 0) {
         if ((u32) internal_len == data_decoded->cap - data_decoded->len) {
           data_decoded->cap *= 2;
           data_decoded->items = realloc(data_decoded->items, data_decoded->cap);
@@ -682,9 +683,7 @@ static void main_loop_clients_receive_data(CnsCtx *ctx) {
 
     if (len == 0) {
       if (client->disconnected_cb)
-        client->disconnected_cb(ctx, &client->connection);
-      data->len = 0;
-      data_decoded->len = 0;
+        client->disconnected_cb(ctx, client->connection);
       tcp_unix_tls_client_destroy(client);
       DA_REMOVE_AT(ctx->tcp_unix_tls_clients, i);
       --i;
@@ -692,11 +691,9 @@ static void main_loop_clients_receive_data(CnsCtx *ctx) {
       continue;
     }
 
-    Data *d = client->connection.proto == CnsProtoTLS ? data_decoded : data;
+    Data *d = client->connection->proto == CnsProtoTLS ? data_decoded : data;
     if (d->len > 0 && client->data_cb) {
-      if (client->data_cb(ctx, &client->connection, d->items, d->len) != CnsResultOk) {
-        data->len = 0;
-        data_decoded->len = 0;
+      if (client->data_cb(ctx, client->connection, d->items, d->len) != CnsResultOk) {
         tcp_unix_tls_client_destroy(client);
         DA_REMOVE_AT(ctx->tcp_unix_tls_clients, i);
         --i;
@@ -1030,7 +1027,8 @@ CnsError cns_tcp_connect(CnsCtx *ctx, const char *addr, unsigned short port, Cns
     return CnsErrorCouldNotConnect;
   }
 
-  CnsConnection connection = {
+  CnsConnection *connection = malloc(sizeof(*connection));
+  *connection = (CnsConnection) {
     sock,
     address,
     CnsProtoTCP,
@@ -1043,9 +1041,9 @@ CnsError cns_tcp_connect(CnsCtx *ctx, const char *addr, unsigned short port, Cns
     NULL,
   };
   u32 addr_len = strlen(addr);
-  if (addr_len > sizeof(connection.address))
-    addr_len = sizeof(connection.address);
-  memcpy(connection.address, addr, addr_len);
+  if (addr_len > sizeof(connection->address))
+    addr_len = sizeof(connection->address);
+  memcpy(connection->address, addr, addr_len);
 
   Data data;
   data.len = 0;
@@ -1176,7 +1174,8 @@ CnsError cns_unix_connect(CnsCtx *ctx, const char *path, CnsUnixConnectInfo *inf
 
   free(address);
 
-  CnsConnection connection = {
+  CnsConnection *connection = malloc(sizeof(*connection));
+  *connection = (CnsConnection) {
     sock,
     {},
     CnsProtoUnix,
@@ -1287,7 +1286,8 @@ CnsError cns_tls_connect(CnsCtx *ctx, const char *host_name, unsigned short port
       break;
   }
 
-  CnsConnection connection = {
+  CnsConnection *connection = malloc(sizeof(*connection));
+  *connection = (CnsConnection) {
     sock,
     {},
     CnsProtoTLS,
@@ -1300,9 +1300,9 @@ CnsError cns_tls_connect(CnsCtx *ctx, const char *host_name, unsigned short port
     NULL,
   };
   u32 addr_len = strlen(addr);
-  if (addr_len > sizeof(connection.address))
-    addr_len = sizeof(connection.address);
-  memcpy(connection.address, addr, addr_len);
+  if (addr_len > sizeof(connection->address))
+    addr_len = sizeof(connection->address);
+  memcpy(connection->address, addr, addr_len);
 
   Data data;
   data.len = 0;
@@ -1336,6 +1336,70 @@ bool cns_tls_send(CnsConnection *connection, unsigned char *data, unsigned long 
     return result;
   }
   return false;
+}
+
+CnsError cns_tls_enable(CnsCtx *ctx, CnsConnection *connection, const char *host_name) {
+  if (connection->proto != CnsProtoTCP)
+    return CnsErrorProtoNotSupported;
+
+  if (connection->owner_server_index != (u32) -1) {
+    return CnsErrorServerShouldBeTLSFromTheBeginning;
+  } else if (connection->owner_client_index != (u32) -1) {
+    TcpUnixTlsClient *client =
+      ctx->tcp_unix_tls_clients.items + connection->owner_client_index;
+
+    client->connection->proto = CnsProtoTLS;
+
+    client->connection->tls = tls_create_context(0, TLS_V12);
+    tls_sni_set(client->connection->tls, host_name);
+    tls_client_connect(client->connection->tls);
+    send_pending(client->connection->fd, client->connection->tls);
+
+    struct pollfd poll_fd = {0};
+    poll_fd.fd = client->connection->fd;
+    poll_fd.events = POLLIN;
+
+    u8 buffer[512];
+    while (true) {
+      i32 result = poll(&poll_fd, 1, client->receive_timeout * 10);
+
+      if (result < 0) {
+        close(client->connection->fd);
+        tls_destroy_context(client->connection->tls);
+        return CnsErrorCouldNotPerformHandshake;
+      }
+
+      if (poll_fd.revents == 0) {
+        if (tls_established(client->connection->tls) != 1) {
+          close(client->connection->fd);
+          tls_destroy_context(client->connection->tls);
+          return CnsErrorCouldNotPerformHandshake;
+        }
+        break;
+      }
+
+      i32 len = recv(client->connection->fd, buffer, sizeof(buffer), 0);
+      if (len <= 0) {
+        close(client->connection->fd);
+        tls_destroy_context(client->connection->tls);
+        return CnsErrorCouldNotPerformHandshake;
+      }
+
+      if (tls_consume_stream(client->connection->tls,
+                             buffer, len, verify_signature) < 0) {
+        close(client->connection->fd);
+        tls_destroy_context(client->connection->tls);
+        return CnsErrorCouldNotPerformHandshake;
+      }
+
+      send_pending(client->connection->fd, client->connection->tls);
+
+      if (tls_established(client->connection->tls) == 1)
+        break;
+    }
+  }
+
+  return CnsErrorOk;
 }
 
 CnsTimer *cns_start_timer(CnsCtx *ctx, unsigned long start_timeout_ms,
@@ -1418,17 +1482,18 @@ unsigned short cns_udp_get_dest_port(CnsUdpDest *dest) {
 
 char *cns_get_error_str(CnsError error) {
   switch (error) {
-  case CnsErrorOk:                       return "ok";
-  case CnsErrorCouldNotCreateSocket:     return "could not create socket";
-  case CnsErrorCouldNotBind:             return "could not bind";
-  case CnsErrorCouldNotListen:           return "could not listen";
-  case CnsErrorInvalidAddress:           return "invalid address";
-  case CnsErrorCouldNotConnect:          return "could not connect";
-  case CnsErrorProtoNotSupported:        return "protocol not supported";
-  case CnsErrorCouldNotResolve:          return "could not resolve";
-  case CnsErrorCouldNotPerformHandshake: return "could not perform handshake";
-  case CnsErrorInvalidCertificate:       return "invalid certificate";
-  case CnsErrorInvalidKey:               return "invalid key";
+  case CnsErrorOk:                                return "ok";
+  case CnsErrorCouldNotCreateSocket:              return "could not create socket";
+  case CnsErrorCouldNotBind:                      return "could not bind";
+  case CnsErrorCouldNotListen:                    return "could not listen";
+  case CnsErrorInvalidAddress:                    return "invalid address";
+  case CnsErrorCouldNotConnect:                   return "could not connect";
+  case CnsErrorProtoNotSupported:                 return "protocol not supported";
+  case CnsErrorCouldNotResolve:                   return "could not resolve";
+  case CnsErrorCouldNotPerformHandshake:          return "could not perform handshake";
+  case CnsErrorInvalidCertificate:                return "invalid certificate";
+  case CnsErrorInvalidKey:                        return "invalid key";
+  case CnsErrorServerShouldBeTLSFromTheBeginning: return "server should be TLS from the beginning";
   }
 
   return NULL;
