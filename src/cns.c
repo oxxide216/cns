@@ -1200,7 +1200,8 @@ CnsError cns_tcp_connect(CnsCtx *ctx, const char *addr, unsigned short port,
   if (ctx->max_client_receive_timeout < info->receive_timeout)
     ctx->max_client_receive_timeout = info->receive_timeout;
 
-  *out = connection;
+  if (out)
+    *out = connection;
   return CnsErrorOk;
 }
 
@@ -1353,7 +1354,8 @@ CnsError cns_unix_connect(CnsCtx *ctx, const char *path,
   if (ctx->max_client_receive_timeout < info->receive_timeout)
     ctx->max_client_receive_timeout = info->receive_timeout;
 
-  *out = connection;
+  if (out)
+    *out = connection;
   return CnsErrorOk;
 }
 
@@ -1443,7 +1445,8 @@ CnsError cns_tls_connect(CnsCtx *ctx, const char *host_name, unsigned short port
   if (ctx->max_client_receive_timeout < info->receive_timeout)
     ctx->max_client_receive_timeout = info->receive_timeout;
 
-  *out = connection;
+  if (out)
+    *out = connection;
   return CnsErrorOk;
 }
 

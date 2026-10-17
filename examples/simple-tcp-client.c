@@ -38,7 +38,7 @@ int main(void) {
     .data_cb = data,
     .disconnected_cb = disconnected,
   };
-  CnsError error = cns_tcp_connect(cns, SERVER_ADDRESS, SERVER_PORT, &connect_info);
+  CnsError error = cns_tcp_connect(cns, SERVER_ADDRESS, SERVER_PORT, &connect_info, NULL);
   if (error != CnsErrorOk) {
     fprintf(stderr, "[ERROR] Failed to connect to server: %s\n", cns_get_error_str(error));
     return 1;
