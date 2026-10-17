@@ -116,6 +116,7 @@ typedef struct {
   CnsConnectedCallback       connected_cb;
   CnsConnectionDataCallback  data_cb;
   CnsDisconnectedCallback    disconnected_cb;
+  u32                        poll_fd_index;
 } TcpUnixTlsClient;
 
 typedef Da(TcpUnixTlsClient) TcpUnixTlsClients;
@@ -130,11 +131,14 @@ typedef struct {
 struct CnsCtx {
   Servers            servers;
   TcpUnixTlsClients  tcp_unix_tls_clients;
+  PollFds            not_connected_client_poll_fds;
+  PollFds            connected_client_poll_fds;
   UdpClient          udp_client;
   CnsTimer          *timers;
   void              *user_data;
   bool               stop;
   u32                tcp_unix_tls_clients_connected;
+  u32                max_client_receive_timeout;
 };
 
 static void close_socket(Fd socket) {
@@ -610,6 +614,12 @@ static void main_loop_servers_receive_data(CnsCtx *ctx) {
 }
 
 static void main_loop_clients_confirm_connections(CnsCtx *ctx) {
+  if (poll(ctx->not_connected_client_poll_fds.items,
+           ctx->not_connected_client_poll_fds.len,
+           ctx->max_client_receive_timeout) <= 0)
+    return;
+
+  u32 not_connected_index = 0;
   for (u32 i = 0; i < ctx->tcp_unix_tls_clients.len; ++i) {
     TcpUnixTlsClient *initial_client = ctx->tcp_unix_tls_clients.items + i;
     TcpUnixTlsClient *client = initial_client;
@@ -617,12 +627,11 @@ static void main_loop_clients_confirm_connections(CnsCtx *ctx) {
     if (client->connected)
       continue;
 
-    struct pollfd poll_fd = { client->connection->fd, POLLOUT, 0 };
+    ++not_connected_index;
 
-    if (poll(&poll_fd, 1, client->receive_timeout) <= 0)
-      continue;
-
-    if (poll_fd.revents & POLLOUT) {
+    struct pollfd *poll_fd =
+      ctx->not_connected_client_poll_fds.items + not_connected_index;
+    if (poll_fd->revents & POLLOUT) {
       SockOpt error;
       Size error_len = sizeof(error);
       getsockopt(client->connection->fd, SOL_SOCKET, SO_ERROR, &error, &error_len);
@@ -648,31 +657,67 @@ static void main_loop_clients_confirm_connections(CnsCtx *ctx) {
             if (client->disconnected_cb)
               client->disconnected_cb(ctx, client->connection);
             tcp_unix_tls_client_destroy(client);
+            DA_REMOVE_AT(ctx->not_connected_client_poll_fds, not_connected_index);
             DA_REMOVE_AT(ctx->tcp_unix_tls_clients, i);
-            for (u32 j = i; j < ctx->tcp_unix_tls_clients.len; ++j)
+            for (u32 j = i; j < ctx->tcp_unix_tls_clients.len; ++j) {
               --ctx->tcp_unix_tls_clients.items[j].connection->owner_client_index;
+              if (!ctx->tcp_unix_tls_clients.items[j].connected)
+                --ctx->tcp_unix_tls_clients.items[j].poll_fd_index;
+            }
             --i;
+            --not_connected_index;
           } else if (client == initial_client) {
+            DA_REMOVE_AT(ctx->not_connected_client_poll_fds, not_connected_index);
+            for (u32 j = i; j < ctx->tcp_unix_tls_clients.len; ++j)
+              if (!ctx->tcp_unix_tls_clients.items[j].connected)
+                --ctx->tcp_unix_tls_clients.items[j].poll_fd_index;
+            --not_connected_index;
+
+            client->poll_fd_index = ctx->connected_client_poll_fds.len;
+            struct pollfd poll_fd = { client->connection->fd, POLLIN, 0 };
+            DA_APPEND(ctx->connected_client_poll_fds, poll_fd);
+
             client->connected = true;
             ++ctx->tcp_unix_tls_clients_connected;
           }
         } else {
+          DA_REMOVE_AT(ctx->not_connected_client_poll_fds, not_connected_index);
+          for (u32 j = i; j < ctx->tcp_unix_tls_clients.len; ++j)
+            if (!ctx->tcp_unix_tls_clients.items[j].connected)
+              --ctx->tcp_unix_tls_clients.items[j].poll_fd_index;
+          --not_connected_index;
+
+          client->poll_fd_index = ctx->connected_client_poll_fds.len;
+          struct pollfd poll_fd = { client->connection->fd, POLLIN, 0 };
+          DA_APPEND(ctx->connected_client_poll_fds, poll_fd);
+
           client->connected = true;
           ++ctx->tcp_unix_tls_clients_connected;
         }
       } else {
         if (client->disconnected_cb)
           client->disconnected_cb(ctx, client->connection);
+        DA_REMOVE_AT(ctx->not_connected_client_poll_fds, not_connected_index);
         DA_REMOVE_AT(ctx->tcp_unix_tls_clients, i);
-        for (u32 j = i; j < ctx->tcp_unix_tls_clients.len; ++j)
+        for (u32 j = i; j < ctx->tcp_unix_tls_clients.len; ++j) {
           --ctx->tcp_unix_tls_clients.items[j].connection->owner_client_index;
+          if (!ctx->tcp_unix_tls_clients.items[j].connected)
+            --ctx->tcp_unix_tls_clients.items[j].poll_fd_index;
+        }
         --i;
+        --not_connected_index;
       }
     }
   }
 }
 
 static void main_loop_clients_receive_data(CnsCtx *ctx) {
+  if (poll(ctx->connected_client_poll_fds.items,
+           ctx->connected_client_poll_fds.len,
+           ctx->max_client_receive_timeout) <= 0)
+    return;
+
+  u32 connected_index = 0;
   for (u32 i = 0; i < ctx->tcp_unix_tls_clients.len; ++i) {
     TcpUnixTlsClient *initial_client = ctx->tcp_unix_tls_clients.items + i;
     TcpUnixTlsClient *client = initial_client;
@@ -682,12 +727,11 @@ static void main_loop_clients_receive_data(CnsCtx *ctx) {
     if (!client->connected)
       continue;
 
-    struct pollfd poll_fd = { client->connection->fd, POLLIN, 0 };
+    ++connected_index;
 
-    if (poll(&poll_fd, 1, client->receive_timeout) <= 0)
-      continue;
-
-    if ((poll_fd.revents & POLLIN) == 0)
+    struct pollfd *poll_fd =
+      ctx->connected_client_poll_fds.items + connected_index;
+    if ((poll_fd->revents & POLLIN) == 0)
       continue;
 
     i32 len;
@@ -726,10 +770,15 @@ static void main_loop_clients_receive_data(CnsCtx *ctx) {
       if (client->disconnected_cb)
         client->disconnected_cb(ctx, client->connection);
       tcp_unix_tls_client_destroy(client);
+      DA_REMOVE_AT(ctx->connected_client_poll_fds, connected_index);
       DA_REMOVE_AT(ctx->tcp_unix_tls_clients, i);
-      for (u32 j = i; j < ctx->tcp_unix_tls_clients.len; ++j)
+      for (u32 j = i; j < ctx->tcp_unix_tls_clients.len; ++j) {
         --ctx->tcp_unix_tls_clients.items[j].connection->owner_client_index;
+        if (ctx->tcp_unix_tls_clients.items[j].connected)
+          --ctx->tcp_unix_tls_clients.items[j].poll_fd_index;
+      }
       --i;
+      --connected_index;
       --ctx->tcp_unix_tls_clients_connected;
       continue;
     }
@@ -740,10 +789,15 @@ static void main_loop_clients_receive_data(CnsCtx *ctx) {
         if (client->disconnected_cb)
           client->disconnected_cb(ctx, client->connection);
         tcp_unix_tls_client_destroy(client);
+        DA_REMOVE_AT(ctx->connected_client_poll_fds, connected_index);
         DA_REMOVE_AT(ctx->tcp_unix_tls_clients, i);
-        for (u32 j = i; j < ctx->tcp_unix_tls_clients.len; ++j)
+        for (u32 j = i; j < ctx->tcp_unix_tls_clients.len; ++j) {
           --ctx->tcp_unix_tls_clients.items[j].connection->owner_client_index;
+          if (ctx->tcp_unix_tls_clients.items[j].connected)
+            --ctx->tcp_unix_tls_clients.items[j].poll_fd_index;
+        }
         --i;
+      --connected_index;
         --ctx->tcp_unix_tls_clients_connected;
         continue;
       } else if (client != initial_client) {
@@ -1062,14 +1116,22 @@ void cns_close(CnsCtx *ctx, CnsConnection *connection) {
     }
   } else if (connection->owner_client_index != (u32) -1) {
     u32 owner_client_index = connection->owner_client_index;
-    if (ctx->tcp_unix_tls_clients.items[owner_client_index].disconnected_cb)
-      ctx->tcp_unix_tls_clients.items[owner_client_index].disconnected_cb(ctx, connection);
-    if (ctx->tcp_unix_tls_clients.items[owner_client_index].connected)
+    TcpUnixTlsClient *client = ctx->tcp_unix_tls_clients.items + owner_client_index;
+    if (client->disconnected_cb)
+      client->disconnected_cb(ctx, connection);
+    if (client->connected)
       --ctx->tcp_unix_tls_clients_connected;
-    tcp_unix_tls_client_destroy(ctx->tcp_unix_tls_clients.items + owner_client_index);
-    DA_REMOVE_AT(ctx->tcp_unix_tls_clients, owner_client_index);
-    for (u32 i = owner_client_index; i < ctx->tcp_unix_tls_clients.len; ++i)
+    tcp_unix_tls_client_destroy(client);
+    if (client->connected)
+      DA_REMOVE_AT(ctx->connected_client_poll_fds, client->poll_fd_index);
+    else
+      DA_REMOVE_AT(ctx->not_connected_client_poll_fds, client->poll_fd_index);
+    for (u32 i = owner_client_index; i < ctx->tcp_unix_tls_clients.len; ++i) {
       --ctx->tcp_unix_tls_clients.items[i].connection->owner_client_index;
+      if (ctx->tcp_unix_tls_clients.items[i].connected == client->connected)
+        --ctx->tcp_unix_tls_clients.items[i].poll_fd_index;
+    }
+    DA_REMOVE_AT(ctx->tcp_unix_tls_clients, owner_client_index);
   }
 }
 
@@ -1128,8 +1190,15 @@ CnsError cns_tcp_connect(CnsCtx *ctx, const char *addr, unsigned short port,
     info->connected_cb,
     info->data_cb,
     info->disconnected_cb,
+    ctx->not_connected_client_poll_fds.len,
   };
   DA_APPEND(ctx->tcp_unix_tls_clients, client);
+
+  struct pollfd poll_fd = { sock, POLLOUT, 0 };
+  DA_APPEND(ctx->not_connected_client_poll_fds, poll_fd);
+
+  if (ctx->max_client_receive_timeout < info->receive_timeout)
+    ctx->max_client_receive_timeout = info->receive_timeout;
 
   *out = connection;
   return CnsErrorOk;
@@ -1274,8 +1343,15 @@ CnsError cns_unix_connect(CnsCtx *ctx, const char *path,
     info->connected_cb,
     info->data_cb,
     info->disconnected_cb,
+    ctx->not_connected_client_poll_fds.len,
   };
   DA_APPEND(ctx->tcp_unix_tls_clients, client);
+
+  struct pollfd poll_fd = { sock, POLLOUT, 0 };
+  DA_APPEND(ctx->not_connected_client_poll_fds, poll_fd);
+
+  if (ctx->max_client_receive_timeout < info->receive_timeout)
+    ctx->max_client_receive_timeout = info->receive_timeout;
 
   *out = connection;
   return CnsErrorOk;
@@ -1357,8 +1433,15 @@ CnsError cns_tls_connect(CnsCtx *ctx, const char *host_name, unsigned short port
     info->connected_cb,
     info->data_cb,
     info->disconnected_cb,
+    ctx->not_connected_client_poll_fds.len,
   };
   DA_APPEND(ctx->tcp_unix_tls_clients, client);
+
+  struct pollfd poll_fd = { sock, POLLOUT, 0 };
+  DA_APPEND(ctx->not_connected_client_poll_fds, poll_fd);
+
+  if (ctx->max_client_receive_timeout < info->receive_timeout)
+    ctx->max_client_receive_timeout = info->receive_timeout;
 
   *out = connection;
   return CnsErrorOk;
