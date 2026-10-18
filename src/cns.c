@@ -342,6 +342,7 @@ static void main_loop_servers_accept_connections(CnsCtx *ctx) {
     CnsConnection *prev_connections = server->connections;
     CnsConnection *prev_connections_end = server->connections_end;
     LL_PREPEND(server->connections, server->connections_end, CnsConnection);
+    memset(server->connections_end, 0, sizeof(*server->connections_end));
 
     server->connections_end->fd = client;
     if (server->proto != CnsProtoUnix)
@@ -536,6 +537,7 @@ static CnsConnection *udp_accept_connection_if_new(CnsCtx *ctx, Server *server,
     return connection;
 
   LL_PREPEND(server->connections, server->connections_end, CnsConnection);
+  memset(server->connections_end, 0, sizeof(*server->connections_end));
 
   server->connections_end->fd = server->fd;
   server->connections_end->address_info = *address_info;
