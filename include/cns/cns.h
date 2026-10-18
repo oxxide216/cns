@@ -67,8 +67,8 @@ typedef struct {
 } CnsTcpConnectInfo;
 
 typedef struct {
-  unsigned int    receive_timeout;
-  CnsDataCallback data_cb;
+  unsigned int    receive_timeout; // Client only
+  CnsDataCallback data_cb;         // Client only
 } CnsUdpInitInfo;
 
 typedef struct {
