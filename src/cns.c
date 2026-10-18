@@ -122,10 +122,10 @@ typedef struct {
 typedef Da(TcpUnixTlsClient) TcpUnixTlsClients;
 
 typedef struct {
-  Fd              fd;
-  unsigned int    receive_timeout;
-  Data            data;
-  CnsDataCallback data_cb;
+  Fd                  fd;
+  unsigned int        receive_timeout;
+  Data                data;
+  CnsAddrDataCallback data_cb;
 } UdpClient;
 
 struct CnsCtx {
@@ -809,22 +809,29 @@ static void main_loop_clients_receive_data(CnsCtx *ctx) {
     data_decoded->len = 0;
   }
 
-  Data *data = &ctx->udp_client.data;
+  if (ctx->udp_client.fd != 0) {
+    Data *data = &ctx->udp_client.data;
+    // TODO: correctly handle simultaneous data from several addresses
+    struct sockaddr_in address_info;
 
-  i32 len;
-  while ((len = udp_receive_data(ctx->udp_client.fd, data, NULL)) > 0) {
-    if ((u32) len == data->cap - data->len) {
-      data->cap *= 2;
-      data->items = realloc(data->items, data->cap);
+    i32 len;
+    while ((len = udp_receive_data(ctx->udp_client.fd, data, &address_info)) > 0) {
+      if ((u32) len == data->cap - data->len) {
+        data->cap *= 2;
+        data->items = realloc(data->items, data->cap);
+      }
+      data->len += len;
     }
-    data->len += len;
+
+    if (data->len > 0 && ctx->udp_client.data_cb) {
+      char address[64];
+      inet_ntop(AF_INET, &address_info.sin_addr, address, sizeof(address));
+      if (ctx->udp_client.data_cb(ctx, address, data->items, data->len) != CnsResultOk)
+        udp_client_destroy(&ctx->udp_client);
+    }
+
+    data->len = 0;
   }
-
-  if (data->len > 0 && ctx->udp_client.data_cb)
-    if (ctx->udp_client.data_cb(ctx, data->items, data->len) != CnsResultOk)
-      udp_client_destroy(&ctx->udp_client);
-
-  data->len = 0;
 }
 
 void main_loop_timers_update(CnsCtx *ctx) {
@@ -1232,6 +1239,9 @@ CnsError cns_udp_init(CnsCtx *ctx, CnsUdpInitInfo *info) {
     data,
     info->data_cb,
   };
+
+  struct pollfd poll_fd = { sock, POLLIN, 0 };
+  DA_APPEND(ctx->connected_client_poll_fds, poll_fd);
 
   return CnsErrorOk;
 }

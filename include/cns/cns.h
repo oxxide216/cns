@@ -38,7 +38,7 @@ typedef struct CnsTimer CnsTimer;
 // If any of these functions returns CnsResultNotOk, close the connection (or stop the timer)
 typedef CnsResult (*CnsConnectedCallback)(CnsCtx *ctx, CnsConnection *connection);
 typedef CnsResult (*CnsConnectionDataCallback)(CnsCtx *ctx, CnsConnection *connection, unsigned char *data, unsigned long data_len);
-typedef CnsResult (*CnsDataCallback)(CnsCtx *ctx, unsigned char *data, unsigned long data_len);
+typedef CnsResult (*CnsAddrDataCallback)(CnsCtx *ctx, const char *addr, unsigned char *data, unsigned long data_len);
 typedef void      (*CnsDisconnectedCallback)(CnsCtx *ctx, CnsConnection *connection);
 typedef CnsResult (*CnsTimerCallback)(CnsCtx *ctx, CnsTimer *timer);
 
@@ -67,8 +67,8 @@ typedef struct {
 } CnsTcpConnectInfo;
 
 typedef struct {
-  unsigned int    receive_timeout; // Client only
-  CnsDataCallback data_cb;         // Client only
+  unsigned int        receive_timeout; // Client only
+  CnsAddrDataCallback data_cb;         // Client only
 } CnsUdpInitInfo;
 
 typedef struct {
