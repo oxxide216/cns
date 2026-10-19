@@ -828,7 +828,8 @@ static void main_loop_clients_receive_data(CnsCtx *ctx) {
     if (data->len > 0 && ctx->udp_client.data_cb) {
       char address[64];
       inet_ntop(AF_INET, &address_info.sin_addr, address, sizeof(address));
-      if (ctx->udp_client.data_cb(ctx, address, data->items, data->len) != CnsResultOk)
+      if (ctx->udp_client.data_cb(ctx, address, ntohs(address_info.sin_port),
+                                  data->items, data->len) != CnsResultOk)
         udp_client_destroy(&ctx->udp_client);
     }
 
