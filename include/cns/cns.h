@@ -45,7 +45,7 @@ typedef CnsResult (*CnsTimerCallback)(CnsCtx *ctx, CnsTimer *timer);
 typedef struct {
   unsigned char *data;
   unsigned int   len;
-} Bytes;
+} CnsBytes;
 
 typedef struct {
   CnsProto                  proto;           // Is ignored by cns_unix_listen
@@ -55,8 +55,8 @@ typedef struct {
                                              // before data_cb
   CnsConnectionDataCallback data_cb;
   CnsDisconnectedCallback   disconnected_cb; // Unused with UDP
-  Bytes                     cert;            // TLS only
-  Bytes                     key;             // TLS only
+  CnsBytes                  cert;            // TLS only
+  CnsBytes                  key;             // TLS only
 } CnsListenInfo;
 
 typedef struct {
