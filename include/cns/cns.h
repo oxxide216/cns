@@ -48,15 +48,16 @@ typedef struct {
 } CnsBytes;
 
 typedef struct {
-  CnsProto                  proto;           // Is ignored by cns_unix_listen
+  CnsProto                  proto;                // Is ignored by cns_unix_listen
   unsigned int              receive_timeout;
-  CnsConnectedCallback      connected_cb;    // For UDP, called when packet from new
-                                             // client is received for the first time,
-                                             // before data_cb
+  CnsConnectedCallback      connected_cb;         // For UDP, called when packet from new
+                                                  // client is received for the first time,
+                                                  // before data_cb
   CnsConnectionDataCallback data_cb;
-  CnsDisconnectedCallback   disconnected_cb; // Unused with UDP
-  CnsBytes                  cert;            // TLS only
-  CnsBytes                  key;             // TLS only
+  CnsDisconnectedCallback   disconnected_cb;      // Unused with UDP
+  CnsBytes                  cert;                 // TLS only
+  CnsBytes                  key;                  // TLS only
+  bool                      do_not_reuse_address;
 } CnsListenInfo;
 
 typedef struct {

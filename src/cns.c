@@ -982,7 +982,8 @@ CnsError cns_listen(CnsCtx *ctx, unsigned short port, CnsListenInfo *info) {
   if (!is_correct_socket(sock))
     return CnsErrorCouldNotCreateSocket;
 
-  setsockopt(sock, SOL_SOCKET, SO_REUSEADDR, &enable, sizeof(enable));
+  if (!info->do_not_reuse_address)
+    setsockopt(sock, SOL_SOCKET, SO_REUSEADDR, &enable, sizeof(enable));
   make_non_blocking(sock);
 
   struct sockaddr_in address;
