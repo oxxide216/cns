@@ -1292,6 +1292,7 @@ CnsUdpDest *cns_udp_create_dest(CnsCtx *ctx, const char *addr, unsigned short po
   if (addr_len > sizeof(dest->address))
     addr_len = sizeof(dest->address);
   memcpy(dest->address, addr, addr_len);
+  dest->address[addr_len] = '\0';
 
   return dest;
 }
