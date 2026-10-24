@@ -304,7 +304,7 @@ static void main_loop_servers_accept_connections(CnsCtx *ctx) {
     if (!is_correct_socket(client))
       continue;
 
-    struct TLSContext *tls;
+    struct TLSContext *tls = NULL;
     if (server->proto == CnsProtoTLS) {
       tls = tls_accept(server->tls);
 
@@ -416,7 +416,8 @@ static void tcp_unix_tls_server_receive_data(CnsCtx *ctx, Server *server, bool i
       if (server->disconnected_cb)
         server->disconnected_cb(ctx, *connection);
       close_socket((*connection)->fd);
-      tls_destroy_context((*connection)->tls);
+      if (is_tls)
+        tls_destroy_context((*connection)->tls);
       CnsConnection *next = (*connection)->next;
       if (*connection == server->connections_end)
         server->connections_end = next;
@@ -463,7 +464,8 @@ static void tcp_unix_tls_server_receive_data(CnsCtx *ctx, Server *server, bool i
         data->len = 0;
         data_decoded->len = 0;
         close_socket((*connection)->fd);
-        tls_destroy_context((*connection)->tls);
+        if (is_tls)
+          tls_destroy_context((*connection)->tls);
         CnsConnection *next = (*connection)->next;
         if (*connection == server->connections_end)
           server->connections_end = next;
@@ -482,7 +484,8 @@ static void tcp_unix_tls_server_receive_data(CnsCtx *ctx, Server *server, bool i
           data->len = 0;
           data_decoded->len = 0;
           close_socket((*connection)->fd);
-          tls_destroy_context((*connection)->tls);
+          if (is_tls)
+            tls_destroy_context((*connection)->tls);
           CnsConnection *next = (*connection)->next;
           if (*connection == server->connections_end)
             server->connections_end = next;
@@ -1112,7 +1115,8 @@ void cns_close(CnsCtx *ctx, CnsConnection *connection) {
           send_pending((*_connection)->fd, (*_connection)->tls);
         }
         close_socket((*_connection)->fd);
-        tls_destroy_context((*_connection)->tls);
+        if ((*_connection)->proto == CnsProtoTLS)
+          tls_destroy_context((*_connection)->tls);
         CnsConnection *next = (*_connection)->next;
         if (*_connection == server->connections_end)
           server->connections_end = next;
