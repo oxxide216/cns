@@ -212,7 +212,8 @@ static void server_destroy(Server *server) {
   CnsConnection *connection = server->connections;
   while (connection) {
     close_socket(connection->fd);
-    tls_destroy_context(connection->tls);
+    if (connection->proto == CnsProtoTLS)
+      tls_destroy_context(connection->tls);
     CnsConnection *next = connection->next;
     free(connection);
     connection = next;
