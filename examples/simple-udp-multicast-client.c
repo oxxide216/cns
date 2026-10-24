@@ -28,8 +28,11 @@ CnsResult timer_tick(CnsCtx *ctx, CnsTimer *timer) {
   return CnsResultOk;
 }
 
-CnsResult data(CnsCtx *ctx, unsigned char *data, unsigned long data_len) {
+CnsResult data(CnsCtx *ctx, const char *addr, unsigned short port,
+               unsigned char *data, unsigned long data_len) {
   (void) ctx;
+  (void) addr;
+  (void) port;
   (void) data;
 
   printf("[INFO] Received %lu bytes of data\n", data_len);
