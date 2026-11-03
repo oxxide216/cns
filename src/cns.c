@@ -648,13 +648,29 @@ static void main_loop_clients_confirm_connections(CnsCtx *ctx) {
             send_pending(client->connection->fd, client->connection->tls);
             client->started_handshake = true;
           }
-          tls_receive_data(client->connection->fd,
-                           client->connection->tls,
-                           &client->data);
-          send_pending(client->connection->fd, client->connection->tls);
+          if (tls_receive_data(client->connection->fd,
+                               client->connection->tls,
+                               &client->data) == 0) {
+            if (client->disconnected_cb)
+              client->disconnected_cb(ctx, client->connection);
+            tcp_unix_tls_client_destroy(client);
+            DA_REMOVE_AT(ctx->not_connected_client_poll_fds, not_connected_index);
+            DA_REMOVE_AT(ctx->tcp_unix_tls_clients, i);
+            for (u32 j = i; j < ctx->tcp_unix_tls_clients.len; ++j) {
+              --ctx->tcp_unix_tls_clients.items[j].connection->owner_client_index;
+              if (!ctx->tcp_unix_tls_clients.items[j].connected)
+                --ctx->tcp_unix_tls_clients.items[j].poll_fd_index;
+            }
+            --i;
+            --not_connected_index;
 
-          if (tls_established(client->connection->tls) != 1)
             continue;
+          } else {
+            send_pending(client->connection->fd, client->connection->tls);
+
+            if (tls_established(client->connection->tls) != 1)
+              continue;
+          }
         }
 
         if (client->connected_cb) {
@@ -1006,7 +1022,7 @@ CnsError cns_listen(CnsCtx *ctx, unsigned short port, CnsListenInfo *info) {
   }
 
   if (info->proto == CnsProtoTLS) {
-    tls = tls_create_context(1, TLS_V12);
+    tls = tls_create_context(1, TLS_V13);
     if (tls_load_certificates(tls, info->cert.data, info->cert.len) < 0) {
       close_socket(sock);
       tls_destroy_context(tls);
@@ -1412,7 +1428,7 @@ CnsError cns_tls_connect(CnsCtx *ctx, const char *host_name, unsigned short port
     return CnsErrorCouldNotConnect;
   }
 
-  struct TLSContext *tls = tls_create_context(0, TLS_V12);
+  struct TLSContext *tls = tls_create_context(0, TLS_V13);
   tls_sni_set(tls, host_name);
 
   CnsConnection *connection = malloc(sizeof(*connection));
@@ -1488,7 +1504,7 @@ CnsError cns_tls_enable(CnsCtx *ctx, CnsConnection *connection, const char *host
 
     client->connection->proto = CnsProtoTLS;
 
-    client->connection->tls = tls_create_context(0, TLS_V12);
+    client->connection->tls = tls_create_context(0, TLS_V13);
     tls_sni_set(client->connection->tls, host_name);
     tls_client_connect(client->connection->tls);
     send_pending(client->connection->fd, client->connection->tls);
