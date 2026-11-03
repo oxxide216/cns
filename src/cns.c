@@ -634,10 +634,8 @@ static void main_loop_clients_confirm_connections(CnsCtx *ctx) {
     if (client->connected)
       continue;
 
-    ++not_connected_index;
-
     struct pollfd *poll_fd =
-      ctx->not_connected_client_poll_fds.items + not_connected_index;
+      ctx->not_connected_client_poll_fds.items + not_connected_index++;
     if (poll_fd->revents & POLLOUT) {
       SockOpt error;
       Size error_len = sizeof(error);
@@ -734,10 +732,8 @@ static void main_loop_clients_receive_data(CnsCtx *ctx) {
     if (!client->connected)
       continue;
 
-    ++connected_index;
-
     struct pollfd *poll_fd =
-      ctx->connected_client_poll_fds.items + connected_index;
+      ctx->connected_client_poll_fds.items + connected_index++;
     if ((poll_fd->revents & POLLIN) == 0)
       continue;
 
