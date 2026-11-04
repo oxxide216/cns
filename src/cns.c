@@ -459,23 +459,6 @@ static void tcp_unix_tls_server_receive_data(CnsCtx *ctx, Server *server, bool i
         }
       }
 
-      if (len == 0 || (len < 0 && errno != EAGAIN && errno != EINPROGRESS)) {
-        if (server->disconnected_cb)
-          server->disconnected_cb(ctx, *connection);
-        data->len = 0;
-        data_decoded->len = 0;
-        close_socket((*connection)->fd);
-        if (is_tls)
-          tls_destroy_context((*connection)->tls);
-        CnsConnection *next = (*connection)->next;
-        if (*connection == server->connections_end)
-          server->connections_end = next;
-        free(*connection);
-        *connection = next;
-        DA_REMOVE_AT(server->connection_poll_fds, i);
-        continue;
-      }
-
       Data *d = server->proto == CnsProtoTLS ? data_decoded : data;
       if (d->len > 0 && server->data_cb) {
         u32 prev_poll_fds_len = server->connection_poll_fds.len;
@@ -500,6 +483,24 @@ static void tcp_unix_tls_server_receive_data(CnsCtx *ctx, Server *server, bool i
           continue;
         }
       }
+
+      if (len == 0 || (len < 0 && errno != EAGAIN && errno != EINPROGRESS)) {
+        if (server->disconnected_cb)
+          server->disconnected_cb(ctx, *connection);
+        data->len = 0;
+        data_decoded->len = 0;
+        close_socket((*connection)->fd);
+        if (is_tls)
+          tls_destroy_context((*connection)->tls);
+        CnsConnection *next = (*connection)->next;
+        if (*connection == server->connections_end)
+          server->connections_end = next;
+        free(*connection);
+        *connection = next;
+        DA_REMOVE_AT(server->connection_poll_fds, i);
+        continue;
+      }
+
       data->len = 0;
       data_decoded->len = 0;
     }
@@ -785,6 +786,31 @@ static void main_loop_clients_receive_data(CnsCtx *ctx) {
       }
     }
 
+    Data *d = client->connection->proto == CnsProtoTLS ? data_decoded : data;
+    if (d->len > 0 && client->data_cb) {
+      if (client->data_cb(ctx, client->connection, d->items, d->len) != CnsResultOk) {
+        if (client->disconnected_cb)
+          client->disconnected_cb(ctx, client->connection);
+        tcp_unix_tls_client_destroy(client);
+        DA_REMOVE_AT(ctx->connected_client_poll_fds, connected_index);
+        DA_REMOVE_AT(ctx->tcp_unix_tls_clients, i);
+        for (u32 j = i; j < ctx->tcp_unix_tls_clients.len; ++j) {
+          --ctx->tcp_unix_tls_clients.items[j].connection->owner_client_index;
+          if (ctx->tcp_unix_tls_clients.items[j].connected)
+            --ctx->tcp_unix_tls_clients.items[j].poll_fd_index;
+        }
+        --i;
+        --connected_index;
+        --ctx->tcp_unix_tls_clients_connected;
+        continue;
+      } else if (client != initial_client) {
+        --i;
+        data->len = 0;
+        data_decoded->len = 0;
+        continue;
+      }
+    }
+
     if (len == 0 || (len < 0 && errno != EAGAIN && errno != EINPROGRESS)) {
       if (client->disconnected_cb)
         client->disconnected_cb(ctx, client->connection);
@@ -800,28 +826,6 @@ static void main_loop_clients_receive_data(CnsCtx *ctx) {
       --connected_index;
       --ctx->tcp_unix_tls_clients_connected;
       continue;
-    }
-
-    Data *d = client->connection->proto == CnsProtoTLS ? data_decoded : data;
-    if (d->len > 0 && client->data_cb) {
-      if (client->data_cb(ctx, client->connection, d->items, d->len) != CnsResultOk) {
-        if (client->disconnected_cb)
-          client->disconnected_cb(ctx, client->connection);
-        tcp_unix_tls_client_destroy(client);
-        DA_REMOVE_AT(ctx->connected_client_poll_fds, connected_index);
-        DA_REMOVE_AT(ctx->tcp_unix_tls_clients, i);
-        for (u32 j = i; j < ctx->tcp_unix_tls_clients.len; ++j) {
-          --ctx->tcp_unix_tls_clients.items[j].connection->owner_client_index;
-          if (ctx->tcp_unix_tls_clients.items[j].connected)
-            --ctx->tcp_unix_tls_clients.items[j].poll_fd_index;
-        }
-        --i;
-      --connected_index;
-        --ctx->tcp_unix_tls_clients_connected;
-        continue;
-      } else if (client != initial_client) {
-        --i;
-      }
     }
 
     data->len = 0;
