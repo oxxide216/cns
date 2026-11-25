@@ -147,8 +147,11 @@ CnsUdpDest     *cns_udp_get_connection_dest(CnsConnection *connection);
 char           *cns_udp_get_dest_address(CnsUdpDest *dest);
 unsigned short  cns_udp_get_dest_port(CnsUdpDest *dest);
 // Unix-only getters
-void            cns_get_original_dst(CnsConnection *connection, char *address,
-                                     unsigned int address_len, unsigned short *port);
+void            cns_get_original_dst(CnsConnection *connection,
+                                     unsigned char address[4],
+                                     unsigned short *port);
+void            cns_get_original_dst_str(CnsConnection *connection, char *address,
+                                         unsigned int address_len, unsigned short *port);
 
 // Utils
 char *cns_get_error_str(CnsError error);

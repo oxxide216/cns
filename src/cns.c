@@ -1638,8 +1638,19 @@ unsigned short cns_udp_get_dest_port(CnsUdpDest *dest) {
   return ntohs(dest->address_info.sin_port);
 }
 
-void cns_get_original_dst(CnsConnection *connection, char *address,
-                          unsigned int address_len, unsigned short *port) {
+void cns_get_original_dst(CnsConnection *connection,
+                          unsigned char address[4],
+                          unsigned short *port) {
+  struct sockaddr_in addr;
+  socklen_t addr_size = sizeof(addr);
+  getsockopt(connection->fd, SOL_IP, SO_ORIGINAL_DST, &addr, &addr_size);
+
+  memcpy(address, &addr.sin_addr, 4);
+  *port = ntohs(addr.sin_port);
+}
+
+void cns_get_original_dst_str(CnsConnection *connection, char *address,
+                              unsigned int address_len, unsigned short *port) {
   struct sockaddr_in addr;
   socklen_t addr_size = sizeof(addr);
   getsockopt(connection->fd, SOL_IP, SO_ORIGINAL_DST, &addr, &addr_size);
